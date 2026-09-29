@@ -104,6 +104,10 @@ class Server:
             self.chats[chat_id] = deepcopy(body["chat"])
             return {"id": chat_id}
         if path == "/api/chat/completions":
+            # Current Open WebUI replaces the pre-saved assistant's parent using
+            # user_message from the completion, even when the caller omitted it.
+            tree = self.chats[body["chat_id"]]["history"]["messages"]
+            tree[body["id"]]["parentId"] = (body.get("user_message") or {}).get("id")
             self.pending[body["chat_id"]] = [self.rounds, body["id"]]
             return {"status": True, "task_ids": ["task"], "chat_id": body["chat_id"]}
         if path.startswith("/api/tasks/chat/"):
@@ -189,6 +193,47 @@ async def test_multiturn_and_isolation(manager, server):
     assert tree[first.state.last_assistant_message_id]["childrenIds"] == [user_id]
     calls = [c[2]["json"] for c in server.calls if c[1] == "/api/chat/completions"]
     assert [m["role"] for m in calls[1]["messages"]] == ["user", "assistant", "user"]
+
+
+async def test_device_context_survives_acknowledgement(manager, server):
+    """Retain the device command across a short thanks/acknowledgement exchange."""
+    server.answer = "Done."
+    first = await manager.async_process("one", "Turn on the office light", OPTIONS)
+    server.answer = "Anytime."
+    await manager.async_process("one", "Thanks", OPTIONS)
+    await manager.async_process("one", "Turn it off again", OPTIONS)
+    calls = [c[2]["json"] for c in server.calls if c[1] == "/api/chat/completions"]
+    assert calls[-1]["messages"] == [
+        {"role": "user", "content": "Turn on the office light"},
+        {"role": "assistant", "content": "Done."},
+        {"role": "user", "content": "Thanks"},
+        {"role": "assistant", "content": "Anytime."},
+        {"role": "user", "content": "Turn it off again"},
+    ]
+    assert calls[0]["parent_id"] is None
+    assert calls[1]["parent_id"] == first.state.last_assistant_message_id
+    tree = server.chats[first.state.chat_id]["history"]["messages"]
+    for call in calls:
+        assert tree[call["id"]]["parentId"] == call["user_message"]["id"]
+        assert call["user_message"]["parentId"] == call["parent_id"]
+
+
+async def test_unexecuted_tool_keeps_last_successful_context(manager, server):
+    """Do not replay an action or start a context-free chat after rejected output."""
+    first = await manager.async_process("one", "Turn on the office light", OPTIONS)
+    server.answer = '<tool_call>{"name":"switch_light"}</tool_call>'
+    with pytest.raises(UnexecutedToolCall):
+        await manager.async_process("one", "Turn it off again", OPTIONS)
+    assert manager.states["one"] == first.state
+    assert sum(c[1] == "/api/chat/completions" for c in server.calls) == 2
+    server.answer = "Done."
+    result = await manager.async_process("one", "Turn it off", OPTIONS)
+    assert result.state.chat_id == first.state.chat_id
+    calls = [c[2]["json"] for c in server.calls if c[1] == "/api/chat/completions"]
+    assert calls[-1]["parent_id"] == first.state.last_assistant_message_id
+    assert calls[-1]["messages"][0]["content"] == "Turn on the office light"
+    assert "<tool_call>" not in str(calls[-1]["messages"])
+    assert len(calls[-1]["messages"]) == 3
 
 
 async def test_request_prefix_remains_stable(manager, server):

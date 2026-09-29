@@ -4,7 +4,7 @@
 
 A HACS custom conversation integration that sends Assist text to a real Open WebUI chat and waits for Open WebUI to finish its native server-side agent loop. Open WebUI chooses tools, executes them, processes their results, and produces the final response for Assist/TTS.
 
-**Status: 2.0.0-beta.2, testing candidate.** Early user testing on Open WebUI 0.11.4 reports working custom tool selection and memory. Automated protocol tests do not prove every model or tool configuration works; complete the [acceptance tests](docs/testing.md) for your setup. This is an independent community project, not an official Home Assistant or Open WebUI integration.
+**Status: 2.0.0-beta.3, testing candidate.** Early user testing on Open WebUI 0.11.4 reports working custom tool selection and memory. Automated protocol tests do not prove every model or tool configuration works; complete the [acceptance tests](docs/testing.md) for your setup. This is an independent community project, not an official Home Assistant or Open WebUI integration.
 
 ## Why this exists
 
@@ -141,6 +141,8 @@ This integration does not expose Home Assistant entities as LLM tools, register 
 ## Multi-turn conversations and chat visibility
 
 Each Home Assistant conversation ID maps to its own saved chat and session. Follow-ups append linked user/assistant nodes, reuse that chat, and send the active branch with structured assistant output where present. Concurrent turns in one HA conversation are serialized; different conversations stay isolated.
+
+Completion requests include the current user node and parent reference so Open WebUI preserves that branch when it saves its assistant placeholder. If a completed response contains raw unexecuted tool syntax, the error is reported and the previous successful branch is retained for the next user request. The failed response is excluded from that next branch; no action is automatically retried.
 
 Chats are titled **Home Assistant**. Title, tag and follow-up generation are disabled to avoid extra model calls. By default, chats created under auto-cleanup are deleted after 15 minutes without a request, checked once per minute. An active local request or running Open WebUI task delays deletion. The API user needs permission to delete chats; connection/permission failures defer cleanup and log a warning. Enable **Keep chat history in Open WebUI** to retain chats and cancel pending cleanup.
 

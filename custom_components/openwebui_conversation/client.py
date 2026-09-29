@@ -530,12 +530,18 @@ class OpenWebUIClient:
                         await on_chat_created(next_state.chat_id)
                 saved = monotonic()
                 timings["chat_save_s"] = saved - started
+                tree = self._tree(chat)
+                user_message = tree[tree[assistant_id]["parentId"]]
                 payload = {
                     "model": model["id"],
                     "messages": messages,
                     "stream": True,
                     "chat_id": next_state.chat_id,
                     "id": assistant_id,
+                    # The current backend recreates the assistant placeholder from
+                    # user_message.id. Omitting this severs its saved parent link.
+                    "user_message": user_message,
+                    "parent_id": parent,
                     "session_id": next_state.session_id,
                     "features": features,
                     "params": params,

@@ -10,7 +10,7 @@ from typing import Any
 
 from .client import AgentResult, ConversationState, OpenWebUIClient
 from .const import CONF_MODEL, DEFAULT_OPTIONS, FEATURES, LOGGER
-from .exceptions import NotFoundError, OpenWebUIError
+from .exceptions import NotFoundError, OpenWebUIError, UnexecutedToolCall
 from .history import ChatHistoryCleaner
 
 
@@ -114,6 +114,12 @@ class ConversationManager:
                     thinking_mode=settings["thinking_mode"],
                     on_chat_created=track_chat,
                 )
+            except UnexecutedToolCall:
+                # This is raised only after remote tasks stop and final text is
+                # checked. Keep the last successful branch, excluding the failed
+                # response; a later user request can still resolve "it" safely.
+                self.client.clear_discovery_cache()
+                raise
             except (OpenWebUIError, asyncio.CancelledError):
                 # A remote run may still be active. Do not attach another request to it.
                 self.states.pop(conversation_id, None)

@@ -32,6 +32,8 @@ The completion includes `model`, the active branch's `messages`, `stream: true`,
 
 The created tree includes camelCase `history.currentId`, `history.messages`, UUID IDs, `parentId`, `childrenIds`, timestamps, user model list, assistant model/name/index and `done: false`. Every follow-up links through the previous successful assistant. Structured assistant `output` is carried into subsequent model context, as in the browser. Final speech excludes reasoning, tool events and sources; only the final assistant prose is used. The original message stays in Open WebUI.
 
+**Beta.3 correction:** the completion also sends `user_message` (the current saved user node) and `parent_id` (the prior assistant ID or null). The inspected backend's existing-chat path recreates assistant placeholders with `parentId = metadata.user_message_id`; omitting `user_message` overwrites the parent with null even when a correct tree was saved beforehand. Supplying it also lets middleware load the authoritative branch from the database. The original mock did not reproduce this overwrite and therefore missed the history loss; regression tests now reproduce it. See [the backend placeholder handling](https://github.com/open-webui/open-webui/blob/8bd8b4fac5e059578ac0c74b3c18d11139f88b7d/backend/open_webui/main.py).
+
 ## Discovery and browser defaults
 
 The inspected [`routers/tools.py`](https://github.com/open-webui/open-webui/blob/8bd8b4fac5e059578ac0c74b3c18d11139f88b7d/backend/open_webui/routers/tools.py) aggregates local Workspace tools, OpenAPI IDs (`server:...`) and MCP IDs (`server:mcp:...`) in **one** accessible-user list. The integration does not need admin connection endpoints, infer IDs or acquire server credentials. MCP entries may carry `authenticated: false`.

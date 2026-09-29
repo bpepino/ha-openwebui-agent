@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.0-beta.3 — unreleased
+
+- Send the current `user_message` and `parent_id` with each completion, matching the current Open WebUI browser/backend contract. Without these fields, the backend overwrote assistant parent links with null and later turns lost earlier user messages.
+- Preserve the last successful conversation branch after a completed response is rejected as an unexecuted tool call. A later user request retains device context without replaying the failed action or including its raw tool text. Timeouts and uncertain server failures still invalidate the mapping.
+- Model the backend's placeholder overwrite in the protocol tests and cover the light-on / thanks / light-off sequence and context after rejected output.
+
+Validation: 83 full Home Assistant/protocol tests passed, 71 portable tests passed, Ruff lint/format passed, and hassfest reported 1 integration with 0 invalid. A reported raw XML tool response was confirmed not to execute; provider tool parsing remains a separate live investigation, not a claimed fix in this version.
+
 ## 2.0.0-beta.2 — unreleased
 
 - Distinguish missing tools, required MCP OAuth authorization, browser-local connections and terminal errors; identify the selected resource that failed.
