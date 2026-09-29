@@ -1,14 +1,19 @@
 """Home Assistant lifecycle for Open WebUI Agent."""
 
+from datetime import timedelta
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.storage import Store
 
 from .client import OpenWebUIClient
 from .const import DEFAULT_OPTIONS, DOMAIN, LOGGER, VERSION
 from .exceptions import AuthenticationError, OpenWebUIError
+from .history import ChatHistoryCleaner
 from .migration import migrate_options
 from .state import ConversationManager
 
@@ -34,7 +39,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryNotReady(
             "Open WebUI connection or API is unavailable"
         ) from err
-    manager = ConversationManager(client)
+    store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.chat_cleanup")
+    cleaner = None
+    if options["keep_chat_history"]:
+        # Enabling retention cancels pending deletion as well as future tracking.
+        await store.async_remove()
+    else:
+        cleaner = ChatHistoryCleaner(client, store.async_save, await store.async_load())
+    manager = ConversationManager(client, cleaner=cleaner)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = manager
     try:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -43,6 +55,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN].pop(entry.entry_id, None)
         raise
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+    if cleaner:
+        entry.async_on_unload(
+            async_track_time_interval(
+                hass, cleaner.async_cleanup, timedelta(seconds=60)
+            )
+        )
+        entry.async_create_background_task(
+            hass, cleaner.async_cleanup(), "openwebui_chat_cleanup"
+        )
     LOGGER.debug("Open WebUI Agent %s initialized", VERSION)
     return True
 

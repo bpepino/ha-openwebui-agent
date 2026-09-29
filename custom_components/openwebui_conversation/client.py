@@ -7,8 +7,9 @@ only the persisted assistant message is a response to the caller.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import re
 from time import monotonic, time
@@ -22,16 +23,23 @@ from .const import LOGGER
 from .exceptions import (
     AgentFailedError,
     AuthenticationError,
+    BrowserToolUnsupported,
     CompletionTimeout,
     ModelMissingError,
     NotFoundError,
     OpenWebUIError,
     PermissionDenied,
     ProtocolError,
-    ResourceUnavailable,
+    TerminalDisabled,
+    TerminalRequired,
+    TerminalUnavailable,
+    ToolAuthorizationRequired,
+    ToolUnavailable,
     UnexecutedToolCall,
     UnsupportedAPIError,
 )
+
+DISCOVERY_CACHE_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -62,6 +70,7 @@ class AgentResult:
     text: str
     message: dict[str, Any]
     state: ConversationState
+    timings: dict[str, float] = field(default_factory=dict)
 
 
 def normalize_url(value: str) -> str:
@@ -110,6 +119,33 @@ class OpenWebUIClient:
         self.timeout = timeout
         self.verify_ssl = verify_ssl
         self.server_version: str | None = None
+        self._discovery_cache: dict[str, tuple[float, list[dict]]] = {}
+        self._discovery_locks: dict[str, asyncio.Lock] = {}
+
+    def clear_discovery_cache(self) -> None:
+        """Recheck metadata after a failed turn without replaying the completion."""
+        self._discovery_cache.clear()
+
+    async def _discovery_items(
+        self, path: str, *, refresh: bool, wrapped: bool = False
+    ) -> list[dict]:
+        """Reuse short-lived discovery results; never cache chats or execution."""
+        async with self._discovery_locks.setdefault(path, asyncio.Lock()):
+            cached = self._discovery_cache.get(path)
+            if (
+                not refresh
+                and cached
+                and monotonic() - cached[0] < DISCOVERY_CACHE_SECONDS
+            ):
+                return deepcopy(cached[1])
+            # Never reuse an expired result if its refresh fails.
+            self._discovery_cache.pop(path, None)
+            data = await self._request("GET", path)
+            if wrapped:
+                data = data.get("data") if isinstance(data, dict) else None
+            items = self._items(data)
+            self._discovery_cache[path] = (monotonic(), deepcopy(items))
+            return items
 
     async def _request(self, method: str, path: str, body: dict | None = None) -> Any:
         """Read JSON, release connections, and sanitize every external error."""
@@ -154,13 +190,16 @@ class OpenWebUIClient:
         LOGGER.debug("Open WebUI server version=%s", self.server_version)
         return self.server_version
 
-    async def async_get_models(self) -> list[dict[str, Any]]:
+    async def async_get_models(self, *, refresh: bool = True) -> list[dict[str, Any]]:
         """Discover base and Workspace models visible to the API-key user."""
-        data = await self._request("GET", "/api/models")
-        return self._items(data.get("data") if isinstance(data, dict) else None)
+        return await self._discovery_items("/api/models", refresh=refresh, wrapped=True)
 
     async def async_get_model(self, model_id: str) -> dict[str, Any]:
         """Use the same model metadata as the browser's models store."""
+        for model in await self.async_get_models(refresh=False):
+            if model["id"] == model_id:
+                return model
+        # A newly selected model may have appeared since the cached catalogue.
         for model in await self.async_get_models():
             if model["id"] == model_id:
                 return model
@@ -178,9 +217,9 @@ class OpenWebUIClient:
             raise ProtocolError("Invalid discovery response")
         return data
 
-    async def async_get_tools(self) -> list[Resource]:
+    async def async_get_tools(self, *, refresh: bool = True) -> list[Resource]:
         """Discover Workspace, MCP and OpenAPI servers through the unified endpoint."""
-        data = self._items(await self._request("GET", "/api/v1/tools/"))
+        data = await self._discovery_items("/api/v1/tools/", refresh=refresh)
         return [
             Resource(
                 id=item["id"],
@@ -199,9 +238,9 @@ class OpenWebUIClient:
             if not item["id"].startswith("direct_server:")
         ]
 
-    async def async_get_terminals(self) -> list[Resource]:
+    async def async_get_terminals(self, *, refresh: bool = True) -> list[Resource]:
         """Discover terminals allowed in chat, including saved-chat scoped ones."""
-        data = self._items(await self._request("GET", "/api/v1/terminals/"))
+        data = await self._discovery_items("/api/v1/terminals/", refresh=refresh)
         return [
             Resource(item["id"], item.get("name") or item["id"], "terminal")
             for item in data
@@ -229,11 +268,36 @@ class OpenWebUIClient:
             raise ProtocolError("Invalid model tool defaults")
         ids = list(dict.fromkeys(ids))
         if ids:
-            available = {tool.id: tool for tool in await self.async_get_tools()}
-            if any(i not in available or not available[i].authenticated for i in ids):
-                raise ResourceUnavailable(
-                    "Selected tools need access or OAuth authorization"
+            browser_ids = [i for i in ids if i.startswith("direct_server:")]
+            if browser_ids:
+                raise BrowserToolUnsupported(browser_ids)
+            available = {
+                tool.id: tool for tool in await self.async_get_tools(refresh=False)
+            }
+            missing = [i for i in ids if i not in available]
+            if missing:
+                LOGGER.debug(
+                    "Tool lookup failed; mode=%s selected=%d discovered=%d missing=%r",
+                    options.get("tool_mode", "model"),
+                    len(ids),
+                    len(available),
+                    missing,
                 )
+                if options.get("tool_mode", "model") != "model" or len(missing) == len(
+                    ids
+                ):
+                    raise ToolUnavailable(missing)
+                # The browser intersects model defaults with its accessible tools.
+                # A stale, unrelated default must not block remaining valid tools.
+                LOGGER.warning(
+                    "Skipping %d unavailable model-default tool(s); using %d accessible tool(s). Review the model's tool assignments in Open WebUI",
+                    len(missing),
+                    len(ids) - len(missing),
+                )
+                ids = [i for i in ids if i in available]
+            unauthorized = [i for i in ids if not available[i].authenticated]
+            if unauthorized:
+                raise ToolAuthorizationRequired(unauthorized)
         mode = options.get("terminal_mode", "none")
         terminal = (
             meta.get("terminalId")
@@ -243,12 +307,14 @@ class OpenWebUIClient:
             else None
         )
         if mode == "custom" and not terminal:
-            raise ResourceUnavailable("Select a terminal")
+            raise TerminalRequired()
         if terminal:
             if _mapping(meta.get("capabilities")).get("terminal") is False:
-                raise ResourceUnavailable("Model terminal capability is disabled")
-            if terminal not in {item.id for item in await self.async_get_terminals()}:
-                raise ResourceUnavailable("Terminal is unavailable in chats")
+                raise TerminalDisabled()
+            if terminal not in {
+                item.id for item in await self.async_get_terminals(refresh=False)
+            }:
+                raise TerminalUnavailable([terminal])
         return ids, terminal
 
     async def async_create_chat(self, chat: dict) -> str:
@@ -280,6 +346,14 @@ class OpenWebUIClient:
         await self._request(
             "POST", f"/api/v1/chats/{quote(chat_id, safe='')}", {"chat": chat}
         )
+
+    async def async_delete_chat(self, chat_id: str) -> None:
+        """Delete one known integration-owned chat, never the user's chat list."""
+        deleted = await self._request(
+            "DELETE", f"/api/v1/chats/{quote(chat_id, safe='')}"
+        )
+        if deleted is not True:
+            raise ProtocolError("Chat deletion was not confirmed")
 
     @staticmethod
     def _tree(chat: dict) -> dict:
@@ -369,16 +443,24 @@ class OpenWebUIClient:
         return data["task_ids"]
 
     async def async_wait_for_completion(
-        self, state: ConversationState, poll_interval: float
+        self,
+        state: ConversationState,
+        poll_interval: float,
+        timings: dict[str, float] | None = None,
     ) -> dict:
         """Wait asynchronously and read the exact placeholder we created."""
+        started = monotonic()
         polls = 0
         while await self.async_get_chat_tasks(state.chat_id):
             polls += 1
             if polls == 1 or polls % 10 == 0:
                 LOGGER.debug("Open WebUI agent still running; polls=%d", polls)
             await asyncio.sleep(poll_interval)
+        finished = monotonic()
         chat = await self.async_get_chat(state.chat_id)
+        if timings is not None:
+            timings["completion_wait_s"] = finished - started
+            timings["answer_read_s"] = monotonic() - finished
         message = self._tree(chat).get(state.last_assistant_message_id)
         if (
             not isinstance(message, dict)
@@ -401,11 +483,20 @@ class OpenWebUIClient:
         poll_interval: float,
         state: ConversationState | None = None,
         chat: dict | None = None,
+        *,
+        thinking_mode: str = "model",
+        on_chat_created: Callable[[str], Awaitable[None]] | None = None,
     ) -> AgentResult:
         """Run one native turn without retrying potentially action-taking requests."""
         started = monotonic()
+        timings: dict[str, float] = {}
         if completion_timeout <= 0 or poll_interval <= 0:
             raise ProtocolError("Timeouts and polling interval must be positive")
+        params = {"function_calling": "native"}
+        if thinking_mode == "disabled":
+            params["reasoning_effort"] = "none"
+        elif thinking_mode != "model":
+            raise ProtocolError("Unknown thinking mode")
         try:
             async with asyncio.timeout(completion_timeout):
                 if state:
@@ -435,6 +526,10 @@ class OpenWebUIClient:
                         assistant_id,
                         model["id"],
                     )
+                    if on_chat_created is not None:
+                        await on_chat_created(next_state.chat_id)
+                saved = monotonic()
+                timings["chat_save_s"] = saved - started
                 payload = {
                     "model": model["id"],
                     "messages": messages,
@@ -443,7 +538,7 @@ class OpenWebUIClient:
                     "id": assistant_id,
                     "session_id": next_state.session_id,
                     "features": features,
-                    "params": {"function_calling": "native"},
+                    "params": params,
                     "tool_ids": tool_ids,
                     "background_tasks": {
                         "title_generation": False,
@@ -463,6 +558,7 @@ class OpenWebUIClient:
                     terminal_id is not None,
                 )
                 accepted = await self._request("POST", "/api/chat/completions", payload)
+                timings["submission_s"] = monotonic() - saved
                 if (
                     not isinstance(accepted, dict)
                     or accepted.get("status") is not True
@@ -473,11 +569,11 @@ class OpenWebUIClient:
                         "Expected asynchronous native task acceptance"
                     )
                 message = await self.async_wait_for_completion(
-                    next_state, poll_interval
+                    next_state, poll_interval, timings
                 )
                 text = final_text(message)
                 LOGGER.debug("Native agent finished in %.1fs", monotonic() - started)
-                return AgentResult(text, message, next_state)
+                return AgentResult(text, message, next_state, timings)
         except TimeoutError:
             raise CompletionTimeout("Agent completion timed out") from None
 

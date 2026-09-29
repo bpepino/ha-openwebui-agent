@@ -21,10 +21,16 @@ async def async_get_config_entry_diagnostics(
         "tool_mode": options["tool_mode"],
         "selected_tool_count": len(options["tool_ids"]),
         "terminal_mode": options["terminal_mode"],
+        "thinking_mode": options["thinking_mode"],
+        "keep_chat_history": options["keep_chat_history"],
+        "pending_chat_cleanup_count": manager.cleaner.pending_count
+        if manager.cleaner
+        else 0,
         "timeout": options["timeout"],
         "completion_timeout": options["completion_timeout"],
         "poll_interval": options["poll_interval"],
         "verify_ssl": options["verify_ssl"],
         "active_conversation_count": len(manager.states),
         "conversation_persistence": False,
+        "last_turn_timing_seconds": manager.last_timings,
     }

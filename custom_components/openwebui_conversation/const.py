@@ -5,7 +5,7 @@ from logging import getLogger
 LOGGER = getLogger(__package__)
 DOMAIN = "openwebui_conversation"
 NAME = "Open WebUI Agent"
-VERSION = "2.0.0-beta.1"
+VERSION = "2.0.0-beta.2"
 CONF_SERVICE_NAME = "service_name"
 CONF_BASE_URL = "base_url"
 CONF_API_KEY = "api_key"
@@ -29,6 +29,8 @@ DEFAULT_OPTIONS = {
     CONF_TOOL_MODE: "model",
     CONF_TOOL_IDS: [],
     CONF_TERMINAL_MODE: "none",
+    "thinking_mode": "model",
+    "keep_chat_history": False,
     "memory": True,
     "web_search": True,
     "code_interpreter": False,

@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 from collections import OrderedDict
 from contextlib import asynccontextmanager
+from time import monotonic
 from typing import Any
 
 from .client import AgentResult, ConversationState, OpenWebUIClient
 from .const import CONF_MODEL, DEFAULT_OPTIONS, FEATURES, LOGGER
 from .exceptions import NotFoundError, OpenWebUIError
+from .history import ChatHistoryCleaner
 
 
 class ConversationManager:
@@ -19,7 +21,12 @@ class ConversationManager:
     fresh saved chats. Failed/uncertain runs are never automatically replayed.
     """
 
-    def __init__(self, client: OpenWebUIClient, capacity: int = 128) -> None:
+    def __init__(
+        self,
+        client: OpenWebUIClient,
+        capacity: int = 128,
+        cleaner: ChatHistoryCleaner | None = None,
+    ) -> None:
         """Create one state container per Home Assistant config entry."""
         self.client = client
         self.states: OrderedDict[str, ConversationState] = OrderedDict()
@@ -28,6 +35,8 @@ class ConversationManager:
         self._tasks: set[asyncio.Task] = set()
         self._closed = False
         self._capacity = capacity
+        self.last_timings: dict[str, float] | None = None
+        self.cleaner = cleaner
 
     @asynccontextmanager
     async def _conversation(self, conversation_id: str):
@@ -56,20 +65,33 @@ class ConversationManager:
     async def async_process(
         self, conversation_id: str, prompt: str, options: dict[str, Any]
     ) -> AgentResult:
-        """Resolve fresh model defaults and submit a single turn."""
+        """Resolve model defaults and submit a single turn with measured phases."""
+        started = monotonic()
         settings = {**DEFAULT_OPTIONS, **options}
         async with self._conversation(conversation_id):
+            queued = monotonic()
+            acquired: list[str] = []
+
+            async def track_chat(chat_id: str) -> None:
+                if self.cleaner and chat_id not in acquired:
+                    # Add before the await so cancellation still releases protection.
+                    acquired.append(chat_id)
+                    await self.cleaner.async_acquire(chat_id)
+
             try:
                 model = await self.client.async_get_model(settings.get(CONF_MODEL, ""))
+                discovered = monotonic()
                 tools, terminal = await self.client.async_resolve_resources(
                     model, settings
                 )
+                resolved = monotonic()
                 state = self.states.get(conversation_id)
                 if state and state.model_id != model["id"]:
                     self.states.pop(conversation_id)
                     state = None
                 chat = None
                 if state:
+                    await track_chat(state.chat_id)
                     try:
                         chat = await self.client.async_get_chat(state.chat_id)
                     except NotFoundError:
@@ -78,6 +100,7 @@ class ConversationManager:
                         )
                         self.states.pop(conversation_id)
                         state = None
+                loaded = monotonic()
                 result = await self.client.async_send_message(
                     prompt,
                     model,
@@ -88,11 +111,29 @@ class ConversationManager:
                     settings["poll_interval"],
                     state,
                     chat,
+                    thinking_mode=settings["thinking_mode"],
+                    on_chat_created=track_chat,
                 )
             except (OpenWebUIError, asyncio.CancelledError):
                 # A remote run may still be active. Do not attach another request to it.
                 self.states.pop(conversation_id, None)
+                self.client.clear_discovery_cache()
                 raise
+            finally:
+                if self.cleaner:
+                    for chat_id in acquired:
+                        await self.cleaner.async_release(chat_id)
+            result.timings.update(
+                queue_s=queued - started,
+                model_discovery_s=discovered - queued,
+                resource_discovery_s=resolved - discovered,
+                history_load_s=loaded - resolved,
+                total_s=monotonic() - started,
+            )
+            self.last_timings = {
+                key: round(value, 3) for key, value in result.timings.items()
+            }
+            LOGGER.debug("Open WebUI turn timing (seconds): %s", self.last_timings)
             self.states[conversation_id] = result.state
             self.states.move_to_end(conversation_id)
             return result
@@ -105,4 +146,6 @@ class ConversationManager:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        if self.cleaner:
+            await self.cleaner.async_close()
         self.states.clear()

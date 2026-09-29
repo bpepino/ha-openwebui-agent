@@ -47,6 +47,7 @@ class OpenWebUIAgent(conversation.ConversationEntity):
     ) -> conversation.ConversationResult:
         """Use HA's managed conversation ID without registering any HA LLM API."""
         response = intent.IntentResponse(language=user_input.language)
+        continue_conversation = False
         try:
             result = await self.manager.async_process(
                 chat_log.conversation_id, user_input.text, dict(self.entry.options)
@@ -65,7 +66,10 @@ class OpenWebUIAgent(conversation.ConversationEntity):
                     self.hass, "en", "exceptions", {DOMAIN}
                 )
             response.async_set_error(
-                intent.IntentResponseErrorCode.UNKNOWN, translations[key]
+                intent.IntentResponseErrorCode.UNKNOWN,
+                translations[key].format(
+                    **getattr(err, "translation_placeholders", {})
+                ),
             )
         else:
             text = result.text
@@ -77,6 +81,9 @@ class OpenWebUIAgent(conversation.ConversationEntity):
                 AssistantContent(agent_id=self.entity_id, content=text)
             )
             response.async_set_speech(text)
+            continue_conversation = chat_log.continue_conversation
         return conversation.ConversationResult(
-            response=response, conversation_id=chat_log.conversation_id
+            response=response,
+            conversation_id=chat_log.conversation_id,
+            continue_conversation=continue_conversation,
         )

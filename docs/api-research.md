@@ -24,6 +24,7 @@ The documented APIs are evolving. The earliest release supporting every required
 | POST `/api/v1/chats/{chat_id}` | Save follow-up tree before submission |
 | POST `/api/chat/completions` | Start the native streaming server task |
 | GET `/api/tasks/chat/{chat_id}` | Wait for no active task IDs |
+| DELETE `/api/v1/chats/{chat_id}` | Remove only tracked idle Assist chats when history retention is off |
 
 All use Bearer authentication and the HA-owned aiohttp session. URLs retain optional reverse-proxy prefixes. Redirects are rejected, preventing accidental credential forwarding to another endpoint. No caller-supplied `tools` key is emitted, including for an empty custom selection. `tool_ids: []` is a different field and does not disable built-in injection.
 
@@ -37,7 +38,9 @@ The inspected [`routers/tools.py`](https://github.com/open-webui/open-webui/blob
 
 [`Chat.svelte`](https://github.com/open-webui/open-webui/blob/8bd8b4fac5e059578ac0c74b3c18d11139f88b7d/src/lib/components/chat/Chat.svelte) reads `model.info.meta.toolIds`, deduplicates against the tools list, and handles OAuth in the browser. It explicitly sends these as `tool_ids`. The backend native tool resolver consumes those IDs; it does not automatically reproduce browser selection state. This applies to Workspace/MCP/server-side OpenAPI selections alike.
 
-The integration reproduces the explicit metadata-to-ID selection. It intentionally fails if a configured default disappears or needs OAuth, rather than silently omitting a potentially important tool. Configure the server connection and authorize it in the browser. Browser-local `direct_server:` resources need frontend execution and are excluded.
+The integration reproduces the explicit metadata-to-ID selection. Since beta.2 it filters partially stale model defaults against available tools with a warning, matching the browser. It reports an error when all selected defaults are missing, an explicitly selected custom ID is missing, or a selected tool explicitly requires OAuth. Configure the server connection and authorize it in the browser. Browser-local `direct_server:` resources need frontend execution and produce a specific error when selected through saved metadata.
+
+Discovery results are cached for 60 seconds during conversations, as the official guide recommends caching discovered IDs. Configuration flows explicitly refresh. A failed turn clears the cache without replaying any completion. Server-side authorization remains authoritative for every request.
 
 The same browser reads `info.meta.terminalId` and checks availability and model capability. The integration explicitly sends it only when the user chooses model-default terminal mode. `/api/v1/terminals/` supplies IDs and `contexts`; `contexts.chat: false` is excluded. Saved-chat-scoped terminals receive the real chat ID.
 
@@ -66,4 +69,8 @@ License metadata says **GPL-3.0-only**. Its included GPL section 13 expressly pe
 
 HA 2026.6.0's ConversationEntity already creates a chat session/log before `_async_handle_message`. The integration uses that hook instead of the upstream obsolete direct `async_get_chat_log` call. Config-entry ID remains the entity unique ID. No HA LLM API or exposed-entity helper remains.
 
-The state manager holds only remote IDs. Its 128-entry idle LRU, per-conversation locks and unload cancellation are independent of HTTP protocol. Persistent `Store` mappings are deferred for this beta: session/branch recovery after uncertain server work requires a defined retention/reconciliation policy. Reload/restart starts fresh saved chats and does not delete old ones. This explicitly trades cross-restart continuity for a small, inspectable state layer.
+The state manager holds remote references, with a 128-entry idle LRU, per-conversation locks and unload cancellation. HA's satellite entity already retains its active conversation ID; its chat-session helper expires idle sessions after about five minutes. The adapter returns `chat_log.continue_conversation`, including HA's question punctuation handling, rather than inventing a separate device session or question detector.
+
+When history retention is off, a dedicated cleaner tracks only chat IDs and 15-minute expiry times in HA Store. It records IDs before submission, extends expiry after each turn, and serializes cleanup against chat use. A task check defers deletion while remote work runs. Cleanup resumes after restart; conversation continuation mappings do not. The client never enumerates old user chats for deletion. Enabling retention cancels pending cleanup. Memory records remain managed separately by Open WebUI.
+
+Thinking defaults to model/provider settings. Disabled adds only `params.reasoning_effort: none`, passed by Open WebUI's parameter handling and documented by [NInfer](https://github.com/Neroued/ninfer/blob/master/docs/serving.md). It does not reorder tools, alter earlier messages, freeze time variables or change model-side cache settings. Prompt/KV reuse remains a provider responsibility; conflicting server reasoning overrides must be resolved in the model configuration.

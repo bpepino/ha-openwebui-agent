@@ -64,7 +64,10 @@ def model_schema(values: dict, models: list[dict]) -> vol.Schema:
         else vol.Required(CONF_MODEL)
     )
     schema: dict[Any, Any] = {model_field: select(options)}
-    for key in (*FEATURES, "strip_markdown", "verify_ssl"):
+    schema[vol.Required("thinking_mode", default=values["thinking_mode"])] = select(
+        ["model", "disabled"], translation_key="thinking_mode"
+    )
+    for key in (*FEATURES, "strip_markdown", "verify_ssl", "keep_chat_history"):
         schema[vol.Required(key, default=values[key])] = bool
     for key, maximum in (
         ("timeout", 300),

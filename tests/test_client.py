@@ -11,6 +11,7 @@ from owui_protocol.client import OpenWebUIClient, final_text, normalize_url
 from owui_protocol.exceptions import (
     AgentFailedError,
     AuthenticationError,
+    BrowserToolUnsupported,
     CompletionTimeout,
     ModelMissingError,
     NotFoundError,
@@ -18,10 +19,18 @@ from owui_protocol.exceptions import (
     PermissionDenied,
     ProtocolError,
     ResourceUnavailable,
+    TerminalDisabled,
+    TerminalRequired,
+    TerminalUnavailable,
+    ToolAuthorizationRequired,
+    ToolUnavailable,
     UnexecutedToolCall,
     UnsupportedAPIError,
 )
 from owui_protocol.state import ConversationManager
+from owui_protocol.history import ChatHistoryCleaner
+import owui_protocol.client as client_module
+import owui_protocol.state as state_module
 
 
 class Response:
@@ -110,6 +119,9 @@ class Server:
             return {"task_ids": []}
         if path.startswith("/api/v1/chats/"):
             chat_id = path.rsplit("/", 1)[-1]
+            if method == "DELETE":
+                self.chats.pop(chat_id, None)
+                return True
             if method == "POST":
                 self.chats[chat_id] = deepcopy(body["chat"])
             return {"chat": self.chats[chat_id]}
@@ -177,6 +189,158 @@ async def test_multiturn_and_isolation(manager, server):
     assert tree[first.state.last_assistant_message_id]["childrenIds"] == [user_id]
     calls = [c[2]["json"] for c in server.calls if c[1] == "/api/chat/completions"]
     assert [m["role"] for m in calls[1]["messages"]] == ["user", "assistant", "user"]
+
+
+async def test_request_prefix_remains_stable(manager, server):
+    """Do not inject dates, IDs or changing system text into model messages."""
+    settings = {**OPTIONS, "tool_mode": "custom", "tool_ids": ["helper", "server:api"]}
+    for conversation_id in ("one", "one", "one", "two"):
+        await manager.async_process(conversation_id, "Hello", settings)
+    requests = [c[2]["json"] for c in server.calls if c[1] == "/api/chat/completions"]
+    assert (
+        requests[0]["messages"]
+        == requests[3]["messages"]
+        == [{"role": "user", "content": "Hello"}]
+    )
+    for earlier, later in zip(requests[:2], requests[1:3], strict=True):
+        assert later["messages"][: len(earlier["messages"])] == earlier["messages"]
+    for key in ("features", "params", "tool_ids", "model"):
+        assert all(request[key] == requests[0][key] for request in requests)
+
+
+async def test_disable_thinking_preserves_native_tools(manager, server):
+    """Send the documented NInfer/OpenAI-compatible off setting through Open WebUI."""
+    await manager.async_process(
+        "one", "Hello", {**OPTIONS, "thinking_mode": "disabled"}
+    )
+    payload = next(
+        c[2]["json"] for c in server.calls if c[1] == "/api/chat/completions"
+    )
+    assert payload["params"] == {
+        "function_calling": "native",
+        "reasoning_effort": "none",
+    }
+    assert payload["stream"] is True and "tools" not in payload
+
+
+async def test_cleanup_tracks_failed_submission(manager, client, server):
+    """A chat created before a failed submission still has a cleanup deadline."""
+    save = AsyncMock()
+    cleaner = ChatHistoryCleaner(client, save)
+    manager.cleaner = cleaner
+    server.overrides[("POST", "/api/chat/completions")] = ({}, 403)
+    with pytest.raises(PermissionDenied):
+        await manager.async_process("one", "Sensitive test prompt", OPTIONS)
+    persisted = save.call_args.args[0]
+    assert list(persisted["chats"]) == ["chat-1"]
+    assert "Sensitive" not in str(persisted)
+    assert cleaner.pending_count == 1
+    assert not manager.states
+    await manager.async_close()
+
+
+async def test_turns_reuse_discovery_but_not_execution(manager, server):
+    """Remove repeated catalogue calls while every turn still reaches the server."""
+    settings = {**OPTIONS, "tool_mode": "custom", "tool_ids": ["helper"]}
+    await manager.async_process("one", "Hello", settings)
+    await manager.async_process("one", "Again", settings)
+    paths = [call[1] for call in server.calls]
+    assert paths.count("/api/models") == paths.count("/api/v1/tools/") == 1
+    assert paths.count("/api/chat/completions") == 2
+    assert paths.count("/api/v1/chats/chat-1") == 4
+
+
+async def test_discovery_expiry_and_explicit_refresh(client, server, monkeypatch):
+    """Refresh within a minute and immediately when configuration requests it."""
+    clock = [0.0]
+    monkeypatch.setattr(client_module, "monotonic", lambda: clock[0])
+    first = await client.async_get_models(refresh=False)
+    first[0]["name"] = "Local mutation"
+    server.models[0]["name"] = "Changed on server"
+    clock[0] = 59.0
+    assert (await client.async_get_models(refresh=False))[0]["name"] == "Home Agent"
+    clock[0] = 60.0
+    assert (await client.async_get_models(refresh=False))[0][
+        "name"
+    ] == "Changed on server"
+    server.models[0]["name"] = "Changed again"
+    assert (await client.async_get_models())[0]["name"] == "Changed again"
+    assert len(server.calls) == 3
+
+
+async def test_concurrent_discovery_is_shared(client, monkeypatch):
+    """Concurrent voice conversations do not each reload the same catalogue."""
+
+    async def discovery(*args):
+        await asyncio.sleep(0)
+        return {"data": [{"id": "model"}]}
+
+    request = AsyncMock(side_effect=discovery)
+    monkeypatch.setattr(client, "_request", request)
+    await asyncio.gather(*(client.async_get_models(refresh=False) for _ in range(3)))
+    request.assert_awaited_once()
+
+
+async def test_failed_refresh_never_uses_stale_discovery(client, server, monkeypatch):
+    """A revoked credential or failed refresh must not fall back to old access."""
+    clock = [0.0]
+    monkeypatch.setattr(client_module, "monotonic", lambda: clock[0])
+    await client.async_get_models(refresh=False)
+    server.overrides[("GET", "/api/models")] = ({}, 401)
+    clock[0] = 60.0
+    with pytest.raises(AuthenticationError):
+        await client.async_get_models(refresh=False)
+    with pytest.raises(AuthenticationError):
+        await client.async_get_models(refresh=False)
+
+
+async def test_failed_turn_refreshes_discovery_without_replay(manager, server):
+    """Failure clears cached metadata; only an explicit next turn submits again."""
+    server.overrides[("POST", "/api/chat/completions")] = ({}, 403)
+    with pytest.raises(PermissionDenied):
+        await manager.async_process("one", "Hello", OPTIONS)
+    assert sum(c[1] == "/api/chat/completions" for c in server.calls) == 1
+    server.overrides.clear()
+    await manager.async_process("one", "Try again", OPTIONS)
+    assert sum(c[1] == "/api/models" for c in server.calls) == 2
+
+
+async def test_turn_timings_separate_discovery_from_agent(manager, client, monkeypatch):
+    """Measure all phases with a fake clock, without real-time performance assertions."""
+    clock = [0.0]
+    monkeypatch.setattr(client_module, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(state_module, "monotonic", lambda: clock[0])
+    original = client._request
+
+    async def request(*args, **kwargs):
+        clock[0] += 1.0
+        return await original(*args, **kwargs)
+
+    async def sleep(interval):
+        clock[0] += interval
+
+    monkeypatch.setattr(client, "_request", request)
+    monkeypatch.setattr(client_module.asyncio, "sleep", sleep)
+    result = await manager.async_process(
+        "one",
+        "Hello",
+        {**OPTIONS, "poll_interval": 2, "tool_mode": "custom", "tool_ids": ["helper"]},
+    )
+    assert (
+        result.timings
+        == manager.last_timings
+        == {
+            "queue_s": 0.0,
+            "model_discovery_s": 1.0,
+            "resource_discovery_s": 1.0,
+            "history_load_s": 0.0,
+            "chat_save_s": 1.0,
+            "submission_s": 1.0,
+            "completion_wait_s": 7.0,
+            "answer_read_s": 1.0,
+            "total_s": 12.0,
+        }
+    )
 
 
 async def test_deleted_chat_recovery(manager, server):
@@ -258,13 +422,82 @@ async def test_discovery_and_defaults(client, server):
 async def test_oauth_access_and_missing_model(client, server):
     """Do not silently omit explicitly selected resources."""
     server.tools[0]["authenticated"] = False
-    with pytest.raises(ResourceUnavailable):
+    with pytest.raises(ToolAuthorizationRequired) as raised:
         await client.async_resolve_resources(
             server.models[0],
             {"tool_mode": "custom", "tool_ids": [server.tools[0]["id"]]},
         )
+    assert raised.value.translation_placeholders == {"resources": "server:mcp:exact-id"}
     with pytest.raises(ModelMissingError):
         await client.async_get_model("missing")
+
+
+async def test_stale_model_defaults_use_accessible_intersection(client, server, caplog):
+    """Match browser selection when an unrelated stale default remains attached."""
+    model = server.models[0]
+    model["info"]["meta"]["toolIds"] = ["removed", "helper", "server:mcp:exact-id"]
+    assert await client.async_resolve_resources(model, {}) == (
+        ["helper", "server:mcp:exact-id"],
+        None,
+    )
+    assert "Skipping 1 unavailable" in caplog.text
+
+
+@pytest.mark.parametrize("mode", ["model", "custom"])
+async def test_no_accessible_selected_tools_is_actionable(client, server, mode):
+    """Never silently run without tools when every selected ID is unavailable."""
+    model = server.models[0]
+    model["info"]["meta"]["toolIds"] = ["removed"]
+    with pytest.raises(ToolUnavailable) as raised:
+        await client.async_resolve_resources(
+            model, {"tool_mode": mode, "tool_ids": ["removed"]}
+        )
+    assert raised.value.key == "tool_unavailable"
+    assert raised.value.translation_placeholders == {"resources": "removed"}
+
+
+async def test_custom_selection_does_not_silently_drop_missing_tools(client, server):
+    """Explicit custom selection stays exact even if some tools remain accessible."""
+    with pytest.raises(ToolUnavailable):
+        await client.async_resolve_resources(
+            server.models[0], {"tool_mode": "custom", "tool_ids": ["helper", "removed"]}
+        )
+
+
+async def test_browser_local_tool_has_own_error(client, server):
+    """A browser-local connection should not be misdiagnosed as OAuth failure."""
+    with pytest.raises(BrowserToolUnsupported) as raised:
+        await client.async_resolve_resources(
+            server.models[0], {"tool_mode": "custom", "tool_ids": ["direct_server:0"]}
+        )
+    assert raised.value.translation_placeholders == {"resources": "direct_server:0"}
+
+
+async def test_terminal_none_skips_default_and_discovery(client, server):
+    """An unused model terminal cannot block a tools-only HA conversation."""
+    server.models[0]["info"]["meta"]["terminalId"] = "removed-terminal"
+    assert await client.async_resolve_resources(
+        server.models[0], {"terminal_mode": "none"}
+    ) == ([], None)
+    assert not any(call[1] == "/api/v1/terminals/" for call in server.calls)
+
+
+async def test_terminal_errors_are_distinct(client, server):
+    """Report missing selection, model capability and discovery separately."""
+    with pytest.raises(TerminalRequired):
+        await client.async_resolve_resources(
+            server.models[0], {"terminal_mode": "custom"}
+        )
+    with pytest.raises(TerminalUnavailable) as raised:
+        await client.async_resolve_resources(
+            server.models[0], {"terminal_mode": "custom", "terminal_id": "missing"}
+        )
+    assert raised.value.translation_placeholders == {"resources": "missing"}
+    server.models[0]["info"]["meta"]["capabilities"] = {"terminal": False}
+    with pytest.raises(TerminalDisabled):
+        await client.async_resolve_resources(
+            server.models[0], {"terminal_mode": "custom", "terminal_id": "terminal-one"}
+        )
 
 
 @pytest.mark.parametrize(

@@ -4,7 +4,7 @@
 
 A HACS custom conversation integration that sends Assist text to a real Open WebUI chat and waits for Open WebUI to finish its native server-side agent loop. Open WebUI chooses tools, executes them, processes their results, and produces the final response for Assist/TTS.
 
-**Status: 2.0.0-beta.1, local testing candidate.** Automated protocol tests do not prove your model or tool configuration works. No live Open WebUI instance was available during development; complete the [acceptance tests](docs/testing.md) before relying on this integration for home control. This is an independent community project, not an official Home Assistant or Open WebUI integration.
+**Status: 2.0.0-beta.2, testing candidate.** Early user testing on Open WebUI 0.11.4 reports working custom tool selection and memory. Automated protocol tests do not prove every model or tool configuration works; complete the [acceptance tests](docs/testing.md) for your setup. This is an independent community project, not an official Home Assistant or Open WebUI integration.
 
 ## Why this exists
 
@@ -82,6 +82,8 @@ Copy `custom_components/openwebui_conversation` into your Home Assistant configu
 
 Open the integration's **Configure** action to refresh models, tools and terminals and edit options. If a resource temporarily disappears, its saved ID remains selectable and the form warns you. A missing model or explicitly selected tool fails clearly at runtime; it is never silently replaced with a different model/tool. An expired API key triggers Home Assistant's reauthentication flow.
 
+Conversations reuse discovery metadata for up to 60 seconds. Saving Configure or reloading the integration applies server-side model/tool changes immediately. Open WebUI authorizes every completion; the metadata cache does not grant access or cache execution results.
+
 | Setting | New-install default | Meaning |
 | --- | --- | --- |
 | Memory | On | Request Open WebUI memory tools, subject to permissions/capabilities |
@@ -89,6 +91,8 @@ Open the integration's **Configure** action to refresh models, tools and termina
 | Code Interpreter | Off | Experimental; use a server engine such as Jupyter |
 | Image Generation | Off | Open WebUI may create images; Assist receives text only |
 | Tool mode | Model defaults | Read `info.meta.toolIds` and send exact accessible IDs |
+| Thinking | Model default | Disabled requests `reasoning_effort: none`, supported by NInfer and compatible providers |
+| Keep chat history | Off | Delete integration-created chats after 15 minutes idle; preserve active-session follow-ups |
 | Terminal | None | Explicitly opt into model-default or selected terminal access |
 | Request timeout | 30 seconds | Maximum time for one HTTP request |
 | Completion timeout | 120 seconds | Saved-chat creation/update, submission and completion wait |
@@ -103,7 +107,7 @@ Models come from `/api/models`, including Workspace clones and base models. Mode
 
 The inspected server returns accessible Workspace, MCP and server-side OpenAPI resources together from `/api/v1/tools/`. IDs such as `server:mcp:...` are preserved exactly. Browser-local `direct_server:` connections are not supported: configure a server-side connection in Open WebUI instead.
 
-**Use model defaults** reads the same `info.meta.toolIds` field used by Open WebUI's browser and explicitly sends those IDs. It does not assume the backend inherits them. Missing access or unfinished OAuth causes an actionable error, whereas the browser may offer an OAuth dialog. User-browser saved selections are not imported.
+**Use model defaults** reads the same `info.meta.toolIds` field used by Open WebUI's browser and explicitly sends accessible IDs. If only some defaults are unavailable, it skips those IDs with a log warning and keeps the available tools, matching browser selection. If all selected defaults are unavailable, it reports their IDs. A selected tool that explicitly needs OAuth produces a separate authorization error; complete that authorization in the browser as the API-key user. User-browser saved selections are not imported.
 
 Custom mode sends the selected IDs. An empty selection means no external tools; built-in feature flags and backend-managed model knowledge remain independent. There is no model-specific function name in the integration.
 
@@ -137,13 +141,19 @@ This integration does not expose Home Assistant entities as LLM tools, register 
 
 Each Home Assistant conversation ID maps to its own saved chat and session. Follow-ups append linked user/assistant nodes, reuse that chat, and send the active branch with structured assistant output where present. Concurrent turns in one HA conversation are serialized; different conversations stay isolated.
 
-Chats are titled **Home Assistant**. Title, tag and follow-up generation are disabled to avoid extra model calls. Chat history is not automatically deleted.
+Chats are titled **Home Assistant**. Title, tag and follow-up generation are disabled to avoid extra model calls. By default, chats created under auto-cleanup are deleted after 15 minutes without a request, checked once per minute. An active local request or running Open WebUI task delays deletion. The API user needs permission to delete chats; connection/permission failures defer cleanup and log a warning. Enable **Keep chat history in Open WebUI** to retain chats and cancel pending cleanup.
 
-Mappings are in memory, limited to 128 idle conversation references per entry. Reload, restart, model changes, old-map eviction, or a failed/uncertain run starts a fresh chat on the next turn. Open WebUI chat history remains intact. A manually deleted chat is recovered once by creating a new one. Changes made manually in the browser while a mapped Assist conversation is active are not synchronized as a new conversation branch; avoid simultaneous editing.
+Conversation context stays in Open WebUI, scoped to the current HA conversation. HA's satellite session handling reuses its conversation ID for follow-ups; the supported HA version expires idle sessions after about five minutes. The integration does not join separate sessions or different satellites into one history. It forwards HA's question/follow-up signal so supported satellites can listen again. There is no duplicate long-term HA memory, rolling prompt rewrite or automatic summarization.
+
+Mappings are in memory, limited to 128 idle references per entry. Reload, restart, model changes, eviction or uncertain failure starts a fresh chat on the next turn. Only cleanup IDs and expiry times persist in HA so deletion resumes after restart; prompts and messages are not stored in that cleanup queue. Already-saved Open WebUI memories are separate from chat transcripts. Older untracked chats, including those made by beta.1, are untouched and can be removed manually.
+
+A manually deleted chat is recovered once by creating a new one. Avoid editing an active Assist chat in the browser: browser edits do not select a new Assist branch or extend its cleanup deadline. This mode uses real saved chats during execution; true `temporary:` chats would require a different socket transport.
 
 ## Voice / Assist
 
 Only the final assistant prose is returned. Structured reasoning and tool events are excluded, with the last assistant message used after tool rounds. Strip Markdown affects TTS only. Agent requests can take longer than a voice pipeline's own limit; increasing this integration's timeout does not change the pipeline's timeout.
+
+**Thinking → Disabled** requests actual reasoning disablement, rather than just hiding reasoning in speech. It passes `reasoning_effort: none` through Open WebUI; [NInfer documents this setting](https://github.com/Neroued/ninfer/blob/master/docs/serving.md). Other providers may not support it. Remove conflicting explicit `enable_thinking: true` settings from the Workspace model if applicable. Model default leaves reasoning settings to Open WebUI/provider defaults. Changing thinking mode can require a fresh prompt prefill; subsequent requests keep the same setting.
 
 ## Debugging and diagnostics
 
@@ -156,7 +166,9 @@ logger:
     custom_components.openwebui_conversation: debug
 ```
 
-Logs include versions, shortened chat IDs, model IDs, feature flags, tool counts, polling progress, HTTP failure status and duration. They do not include prompts, histories, response bodies, tool arguments or API keys. Diagnostics use an allowlist of versions, flags, modes, timeouts and counts; URLs and resource identifiers are omitted. Review even sanitized logs before sharing because model IDs can be personal.
+Logs include versions, shortened chat IDs, model IDs, feature flags, tool counts, missing resource IDs, polling progress, HTTP failure status and phase durations. They do not include prompts, histories, response bodies, tool arguments or API keys. Diagnostics use an allowlist of versions, flags, modes, timeouts, counts and timings; URLs and resource identifiers are omitted. Review even sanitized logs before sharing because model/tool IDs can be personal.
+
+The diagnostics field `last_turn_timing_seconds` measures the latest successful turn: waiting for a prior turn (`queue_s`), model/tool discovery, loading/saving chat history, submission, completion waiting and reading the answer. `total_s` covers the integration call, excluding speech recognition and playback. `completion_wait_s` includes model/tool work, network time and polling delay; it is not a direct model benchmark. The discovery cache is unrelated to the model provider's KV/prompt cache.
 
 ## Troubleshooting
 
@@ -165,11 +177,13 @@ Logs include versions, shortened chat IDs, model IDs, feature flags, tool counts
 | Unexecuted `<tool_call>` | Native mode, streaming, model capability, tool assignment, same-user browser test and Open WebUI logs. The integration rejects raw calls; it never executes them. |
 | Model missing | `/api/models`, API-key user permissions and model visibility. Open Configure to refresh. |
 | Tools missing | Server-side configuration, user access, `/api/v1/tools/` and OAuth authorization. Browser-local tools are unsupported. |
+| Model defaults fail but Custom works | Review stale model tool assignments in Open WebUI. Select the intended server in Custom and leave Terminal at None when unused. |
 | Listed tool does not run | Confirm the same prompt works in Open WebUI. Discovery does not guarantee execution or model selection. |
 | Web Search or Memory unused | Global settings, user permissions, model built-in categories and integration toggles must all allow the feature. |
 | Code says WebSocket required | Replace browser Pyodide with server-side Jupyter, or disable Code Interpreter. |
 | No final text / task error | Inspect the saved chat; a server task may fail, require a browser interaction, or return only media. |
 | Timeout | Increase the completion timeout and inspect the saved chat before retrying. An accepted server action may still finish. |
+| Much slower than the browser | Compare time to the completed answer, reasoning settings, tools/features and timing diagnostics. The browser can show partial text before Assist has a final answer. See [latency checks](docs/testing.md#i-latency-and-prompt-cache-checks). |
 | 401 / 403 | API key validity, global API-key enablement, user permissions and API endpoint restrictions. |
 | SSL error | Use a trusted certificate accessible to HA. Disable verification only if you deliberately accept that tradeoff. |
 | Task/chat API unavailable | Upgrade or check reverse-proxy routes against the documented native API. No legacy fallback is used. |

@@ -25,6 +25,7 @@ from custom_components.openwebui_conversation.exceptions import (
     AuthenticationError,
     CompletionTimeout,
     PermissionDenied,
+    ToolUnavailable,
 )
 
 CONNECTION = {
@@ -187,9 +188,21 @@ async def test_assist_final_response_and_translated_error(hass):
     assert result.response.speech["plain"]["speech"] == "Done."
     assert result.conversation_id
     assert manager.async_process.call_args.args[0] == result.conversation_id
+    conversation_id = result.conversation_id
+    manager.async_process.return_value.text = "Which light?"
+    user.conversation_id = conversation_id
+    result = await agent.async_process(user)
+    assert result.continue_conversation is True
+    assert result.conversation_id == conversation_id
+    assert manager.async_process.call_args.args[0] == conversation_id
     manager.async_process.side_effect = CompletionTimeout()
     result = await agent.async_process(user)
     assert "timed out" in result.response.speech["plain"]["speech"]
+    assert result.continue_conversation is False
+    manager.async_process.side_effect = ToolUnavailable(["missing-tool"])
+    result = await agent.async_process(user)
+    assert "missing-tool" in result.response.speech["plain"]["speech"]
+    assert "OAuth" not in result.response.speech["plain"]["speech"]
 
 
 async def test_diagnostics_allowlist(hass):
@@ -207,10 +220,16 @@ async def test_diagnostics_allowlist(hass):
         entry.entry_id: SimpleNamespace(
             client=SimpleNamespace(server_version="0.11.4"),
             states={"private-conversation": "private-chat"},
+            last_timings={"total_s": 12.5, "completion_wait_s": 12.1},
+            cleaner=None,
         )
     }
     result = await async_get_config_entry_diagnostics(hass, entry)
     assert result["active_conversation_count"] == 1
+    assert result["last_turn_timing_seconds"] == {
+        "total_s": 12.5,
+        "completion_wait_s": 12.1,
+    }
     assert all(
         secret not in str(result) for secret in ("fake-key", "example.test", "private-")
     )
@@ -295,6 +314,8 @@ async def test_options_save_retains_legacy_fields(hass, client):
             "timeout": 30,
             "completion_timeout": 180,
             "poll_interval": 3,
+            "thinking_mode": "disabled",
+            "keep_chat_history": True,
         },
     )
     result = await hass.config_entries.options.async_configure(
@@ -305,6 +326,8 @@ async def test_options_save_retains_legacy_fields(hass, client):
     )
     assert result["type"] == "create_entry"
     assert entry.options["search_sentences"] == "legacy"
+    assert entry.options["thinking_mode"] == "disabled"
+    assert entry.options["keep_chat_history"] is True
     assert (
         entry.options["memory"] is False and entry.options["completion_timeout"] == 180
     )
@@ -321,3 +344,43 @@ async def test_setup_auth_failure_requests_reauth(hass):
         assert not await hass.config_entries.async_setup(entry.entry_id)
         assert entry.state is config_entries.ConfigEntryState.SETUP_ERROR
         assert entry.entry_id not in hass.data.get(DOMAIN, {})
+
+
+@pytest.mark.parametrize("keep", [False, True])
+async def test_history_policy_restores_or_cancels_cleanup(hass, hass_storage, keep):
+    """Use HA storage and lifecycle to restore deadlines or honor keep-history."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=CONNECTION,
+        options={
+            **DEFAULT_OPTIONS,
+            "chat_model": "custom-model",
+            "keep_chat_history": keep,
+        },
+        version=2,
+    )
+    entry.add_to_hass(hass)
+    key = f"{DOMAIN}.{entry.entry_id}.chat_cleanup"
+    hass_storage[key] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": key,
+        "data": {"chats": {"owned-chat": 9999999999.0}},
+    }
+    with patch(
+        "custom_components.openwebui_conversation.OpenWebUIClient", autospec=True
+    ) as cls:
+        cls.return_value.async_get_models.return_value = MODELS
+        cls.return_value.async_get_version.return_value = "0.11.4"
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        manager = hass.data[DOMAIN][entry.entry_id]
+        if keep:
+            assert manager.cleaner is None
+            assert key not in hass_storage
+        else:
+            assert manager.cleaner.pending_count == 1
+        cls.return_value.async_delete_chat.assert_not_awaited()
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        if not keep:
+            assert hass_storage[key]["data"]["chats"] == {"owned-chat": 9999999999.0}

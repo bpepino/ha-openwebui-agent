@@ -55,6 +55,47 @@ class ResourceUnavailable(OpenWebUIError):
     key = "resource_unavailable"
 
 
+class ToolUnavailable(ResourceUnavailable):
+    """Selected IDs are absent from the API user's discovery response."""
+
+    key = "tool_unavailable"
+
+    def __init__(self, resource_ids: list[str]) -> None:
+        """Expose only selected identifiers, never the server response or credentials."""
+        super().__init__(self.key)
+        self.translation_placeholders = {"resources": ", ".join(resource_ids)}
+
+
+class ToolAuthorizationRequired(ToolUnavailable):
+    """A discovered tool explicitly requires the API user's OAuth login."""
+
+    key = "tool_authorization_required"
+
+
+class BrowserToolUnsupported(ToolUnavailable):
+    """A browser-local connection cannot be used by the server-side agent."""
+
+    key = "browser_tool_unsupported"
+
+
+class TerminalUnavailable(ToolUnavailable):
+    """A selected terminal is absent or is unavailable in chat contexts."""
+
+    key = "terminal_unavailable"
+
+
+class TerminalDisabled(ResourceUnavailable):
+    """The selected model explicitly disables terminal access."""
+
+    key = "terminal_disabled"
+
+
+class TerminalRequired(ResourceUnavailable):
+    """Specific-terminal mode has no selected terminal."""
+
+    key = "terminal_required"
+
+
 class AgentFailedError(OpenWebUIError):
     """The server task failed or did not persist a final answer."""
 

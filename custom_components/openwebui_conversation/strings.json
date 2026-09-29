@@ -25,7 +25,13 @@
           "verify_ssl": "Verify SSL",
           "timeout": "API request timeout (seconds)",
           "completion_timeout": "Completion timeout (seconds)",
-          "poll_interval": "Polling interval (seconds)"
+          "poll_interval": "Polling interval (seconds)",
+          "thinking_mode": "Thinking",
+          "keep_chat_history": "Keep chat history in Open WebUI"
+        },
+        "data_description": {
+          "thinking_mode": "Disabled sends reasoning_effort: none. Supported by NInfer and compatible models; providers without this setting may reject it. Model default keeps your server settings.",
+          "keep_chat_history": "Off: delete chats created by this integration after 15 minutes idle. Active-session follow-ups keep their context. Saved Open WebUI Memory is separate. On: retain chats and cancel pending cleanup. Older untracked chats are untouched."
         }
       },
       "tools": {
@@ -82,7 +88,13 @@
           "verify_ssl": "Verify SSL",
           "timeout": "API request timeout (seconds)",
           "completion_timeout": "Completion timeout (seconds)",
-          "poll_interval": "Polling interval (seconds)"
+          "poll_interval": "Polling interval (seconds)",
+          "thinking_mode": "Thinking",
+          "keep_chat_history": "Keep chat history in Open WebUI"
+        },
+        "data_description": {
+          "thinking_mode": "Disabled sends reasoning_effort: none. Supported by NInfer and compatible models; providers without this setting may reject it. Model default keeps your server settings.",
+          "keep_chat_history": "Off: delete chats created by this integration after 15 minutes idle. Active-session follow-ups keep their context. Saved Open WebUI Memory is separate. On: retain chats and cancel pending cleanup. Older untracked chats are untouched."
         }
       },
       "tools": {
@@ -133,6 +145,12 @@
         "model": "Use model default terminal",
         "custom": "Specific terminal"
       }
+    },
+    "thinking_mode": {
+      "options": {
+        "model": "Use model default",
+        "disabled": "Disabled"
+      }
     }
   },
   "exceptions": {
@@ -180,6 +198,21 @@
     },
     "terminal_required": {
       "message": "Choose an available terminal, or select None / Use model default terminal."
+    },
+    "tool_unavailable": {
+      "message": "Open WebUI did not list these selected tools for the API-key user: {resources}. In Configure, use Custom tool selection and select an available tool, or update the model defaults and tool permissions in Open WebUI."
+    },
+    "tool_authorization_required": {
+      "message": "These Open WebUI tools need OAuth authorization: {resources}. Sign in to Open WebUI as the API-key owner and authorize those connections."
+    },
+    "browser_tool_unsupported": {
+      "message": "These selected tools are browser-local connections: {resources}. Configure a server-side MCP/OpenAPI connection in Open WebUI and select it for this integration."
+    },
+    "terminal_unavailable": {
+      "message": "Open WebUI did not list this terminal as available in chats for the API-key user: {resources}. Set Terminal to None if you do not need it, or select an accessible terminal."
+    },
+    "terminal_disabled": {
+      "message": "The selected Open WebUI model disables terminal access. Set Terminal to None or enable the model's terminal capability in Open WebUI."
     }
   }
 }

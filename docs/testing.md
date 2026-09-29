@@ -66,3 +66,23 @@ Use a prompt your model can satisfy only by inspecting state and then acting bas
 ## H. Failures and cleanup
 
 Test invalid key, permission denial, unreachable server, missing model, removed tool/default terminal and a deliberately short timeout. Each should give a useful error without leaking credentials. Cancel/unload during a slow run and ensure local polling stops. An accepted server task can keep running: inspect it before retrying any action. Delete test chats manually if desired; integration uninstall never deletes remote history.
+
+## I. Latency and prompt-cache checks
+
+1. Compare the same short, harmless request in the same Workspace model, with the same tools and features. Measure until the **complete** answer in both interfaces; browser streaming can appear quicker. Use typed Assist first to exclude speech recognition and playback.
+2. Repeat within one conversation and compare a fresh conversation separately. Chat/session IDs remain stable within a mapped Assist conversation. Reloading the integration starts a new mapping.
+3. Download integration diagnostics after a successful turn. Compare the phase durations in `last_turn_timing_seconds`. Short-interval repeat turns should avoid discovery requests. Default polling can add roughly zero to two seconds plus HTTP latency; setting one second reduces that contribution but does not accelerate model execution.
+4. If the provider logs slow prefill, compare prompt tokens, cached tokens and time to first token between the browser and Assist. Compare reasoning effort too: browser-local Chat Controls are not imported; shared parameters belong in Open WebUI's Workspace model. Large tool catalogues and long reasoning output can both add latency.
+5. If cached tokens vary, inspect system prompts for changing date/time variables and filters or memory context that modify the prompt. The integration does not insert dates, new IDs or device-state dumps into model message text. Open WebUI builds the final provider request, so integration payloads alone cannot prove provider-prefix equality. Cache eviction or checkpoint policy can also affect reuse; a cache miss alone does not establish a client bug.
+
+Timings and provider token/cache counts are enough for initial diagnosis; keep prompt contents and credentials private. Freezing current-time values or disabling memory changes behavior and is not necessary just to collect measurements.
+
+References: [Open WebUI native agent flow](https://docs.openwebui.com/reference/server-side-tool-calling/), [Open WebUI dynamic-time caching discussion](https://github.com/open-webui/open-webui/issues/28527), [NInfer context-cache architecture](https://github.com/Neroued/ninfer/blob/master/docs/maintainer/resource-scheduling-and-context-cache.md).
+
+## J. Voice context, cleanup and thinking
+
+1. With local command handling disabled for this test pipeline, use the same satellite to request a light action, then immediately say "turn it back off". Verify one Open WebUI chat, linked history, and the correct device. Start a separate conversation/satellite and verify it does not inherit the first conversation.
+2. Make an ambiguous request that causes the model to ask a question. Verify the satellite listens for the answer and the next request reuses the chat. Actual interpretation still depends on the selected model.
+3. Leave Keep chat history off. After 15 minutes idle plus up to one cleanup interval, verify the new test chat disappears. A follow-up resets its deletion timer; a running task prevents cleanup. Restart HA while a deadline is pending and confirm deletion resumes. Older untracked chats must remain.
+4. Enable Keep chat history before a pending deadline; confirm the chat remains. Disabling it again tracks only newly created chats, not old history.
+5. Select Thinking: Disabled with NInfer. Verify its request log reports disabled thinking and no automatic `default->xhigh` reasoning selection. Compare repeated requests after warm-up; the first request after changing thinking mode may require a new prefill. Return to Model default to inherit server settings.

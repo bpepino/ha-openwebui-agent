@@ -1,5 +1,7 @@
 # Implementation report — Open WebUI Agent 2.0.0-beta.1
 
+This records the initial beta.1 implementation and validation. Subsequent beta.2 resource errors, discovery caching, timing diagnostics and user testing are recorded in the [changelog](../CHANGELOG.md); current behavior is documented in the [README](../README.md).
+
 ## 1. Architecture
 
 Assist uses Home Assistant's ConversationEntity/ChatLog lifecycle to obtain a conversation ID and send the user's original text to the integration's state manager. A dedicated async client creates or continues a saved Open WebUI chat, submits a native streaming completion, polls server tasks, and reads the exact assistant placeholder after completion. Open WebUI alone discovers/executes tools and performs all model/tool rounds. Only final assistant prose reaches Assist/TTS; no Home Assistant LLM API, entity tool registration or service executor exists.
@@ -155,7 +157,7 @@ Suggested release notes: This fork turns Assist into a thin client for Open WebU
 
 At the user's subsequent request, the changes were committed locally on **feature/openwebui-full-agent**:
 
-1. `880e6f6` � `feat: add Open WebUI native agent execution and configuration`
+1. `880e6f6` — `feat: add Open WebUI native agent execution and configuration`
 2. `test: cover native agent protocol and Home Assistant lifecycle`
 3. `docs: relaunch integration as Open WebUI Agent`
 
