@@ -13,9 +13,7 @@ import aiohttp
 # Load the HA-independent client without importing HA's integration lifecycle.
 package = types.ModuleType("owui_probe")
 package.__path__ = [
-    str(
-        Path(__file__).resolve().parents[1] / "custom_components/openwebui_conversation"
-    )
+    str(Path(__file__).resolve().parents[1] / "custom_components/openwebui_agent")
 ]
 sys.modules["owui_probe"] = package
 OpenWebUIClient = importlib.import_module("owui_probe.client").OpenWebUIClient

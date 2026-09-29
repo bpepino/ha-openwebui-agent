@@ -1,5 +1,7 @@
 # Implementation report — Open WebUI Agent 2.0.0-beta.1
 
+Historical report: the initial beta recommendations below are superseded by **2.0.0 stable** after user confirmation that beta.3 resolved conversation history. The stable release uses the separate `openwebui_agent` domain and directory; the old-domain preservation and in-place migration described below apply only to the betas. See the [changelog](../CHANGELOG.md) for current release notes and validation.
+
 This records the initial beta.1 implementation and validation. Subsequent beta.2 resource errors, discovery caching, timing diagnostics and user testing are recorded in the [changelog](../CHANGELOG.md); current behavior is documented in the [README](../README.md).
 
 Beta.2 follow-up validation (2026-09-29): **81 tests passed** on Linux/Python 3.14.7/HA 2026.6.0; **69 portable tests passed** on Windows. Ruff lint and formatting passed (27 Python files); official hassfest passed with **1 integration, 0 invalid**. This covers the HA chat-log correction, voice controls, retention lifecycle and thinking request payload. The new satellite/retention/thinking behavior still needs live acceptance testing; working tools and memory on Open WebUI 0.11.4 were user-reported with beta.1. HACS validation remains delegated to the configured GitHub workflow after the maintainer pushes.

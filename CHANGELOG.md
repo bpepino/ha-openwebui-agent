@@ -1,6 +1,15 @@
 # Changelog
 
-## 2.0.0-beta.3 — unreleased
+## 2.0.0 — 2026-09-29
+
+- Promote the tested beta.3 agent protocol to the first stable release.
+- Give the fork its own `openwebui_agent` domain, component directory and release ZIP so it can coexist with upstream's `openwebui_conversation`. Existing upstream/beta entries require one-time setup of the new integration and selection in Assist; see the README migration steps.
+- Open WebUI owns native tool execution, memory and conversation context; Home Assistant provides the Assist interface.
+- Includes linked multi-turn history, voice conversation controls, optional thinking suppression, idle chat cleanup and resource diagnostics from the beta series below.
+
+Validation: 84 Home Assistant/protocol tests passed, including setup alongside an existing upstream entry using the same connection. Ruff lint/format passed; hassfest reported 1 integration with 0 invalid. The user installed beta.3 and confirmed the conversation-history issue was resolved; custom tools and memory were also reported working on Open WebUI 0.11.4. The new domain's live HACS transition, other providers, Code Interpreter, Image Generation and terminals still require setup-specific acceptance testing.
+
+## 2.0.0-beta.3 — development history
 
 - Send the current `user_message` and `parent_id` with each completion, matching the current Open WebUI browser/backend contract. Without these fields, the backend overwrote assistant parent links with null and later turns lost earlier user messages.
 - Preserve the last successful conversation branch after a completed response is rejected as an unexecuted tool call. A later user request retains device context without replaying the failed action or including its raw tool text. Timeouts and uncertain server failures still invalidate the mapping.
@@ -8,7 +17,7 @@
 
 Validation: 83 full Home Assistant/protocol tests passed, 71 portable tests passed, Ruff lint/format passed, and hassfest reported 1 integration with 0 invalid. A reported raw XML tool response was confirmed not to execute; provider tool parsing remains a separate live investigation, not a claimed fix in this version.
 
-## 2.0.0-beta.2 — unreleased
+## 2.0.0-beta.2 — development history
 
 - Distinguish missing tools, required MCP OAuth authorization, browser-local connections and terminal errors; identify the selected resource that failed.
 - Filter partially stale model defaults against accessible tools, matching the browser. Explicit custom selections remain exact; an entirely unavailable selection still reports an error.
@@ -21,7 +30,7 @@ Validation: 83 full Home Assistant/protocol tests passed, 71 portable tests pass
 
 Early user testing on Open WebUI 0.11.4 reports working custom tool selection and memory with beta.1. Initial slow requests included substantial model-server prefill and partial cache reuse; later requests were reported faster. The precise cache behavior has not been reproduced locally, and this update does not claim to fix model-side KV caching.
 
-## 2.0.0-beta.1 — unreleased
+## 2.0.0-beta.1 — development history
 
 - Relaunch the public fork as Open WebUI Agent while preserving the internal `openwebui_conversation` domain and upstream attribution.
 - Replace ordinary completion/search-trigger logic with saved Open WebUI chats, native streaming task submission, polling and final-message retrieval.
@@ -34,4 +43,4 @@ Early user testing on Open WebUI 0.11.4 reports working custom tool selection an
 
 Compatibility: HA 2026.6.0+. Open WebUI current documented Path A, inspected source reporting 0.11.4; minimum release not established. No live server/tool/provider acceptance tests have been performed. Code Interpreter, Image Generation and terminal behavior require local acceptance testing. Conversation mappings do not survive integration reload or HA restart; remote chats remain saved.
 
-No release has been published.
+These beta entries record validation at the time; see 2.0.0 above for the stable release status.

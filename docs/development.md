@@ -39,7 +39,7 @@ python -m pytest -q
 - `tests/ha` uses real Home Assistant fixtures for setup/options, reauth, migration, Assist, diagnostics and unload.
 - `.github/workflows/lint.yml` runs the full Linux suite.
 - `.github/workflows/validate.yml` retains official hassfest and HACS validation. HACS remote checks need the repository to be published/accessible; a local JSON check is not a substitute.
-- For a local hassfest run, use a compatible Home Assistant core checkout and its `python -m script.hassfest --integration-path /absolute/path/to/custom_components/openwebui_conversation` command. Follow that checkout's development dependencies.
+- For a local hassfest run, use a compatible Home Assistant core checkout and its `python -m script.hassfest --integration-path /absolute/path/to/custom_components/openwebui_agent` command. Follow that checkout's development dependencies.
 - CI configuration is prepared locally only. No workflow, release or remote publication is triggered by this task.
 
 ## Protocol probe

@@ -8,6 +8,6 @@ import types
 # The modules under test are the actual integration sources, not test doubles.
 package = types.ModuleType("owui_protocol")
 package.__path__ = [
-    str(Path(__file__).parents[1] / "custom_components/openwebui_conversation")
+    str(Path(__file__).parents[1] / "custom_components/openwebui_agent")
 ]
 sys.modules["owui_protocol"] = package

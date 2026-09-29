@@ -4,7 +4,7 @@
 
 A HACS custom conversation integration that sends Assist text to a real Open WebUI chat and waits for Open WebUI to finish its native server-side agent loop. Open WebUI chooses tools, executes them, processes their results, and produces the final response for Assist/TTS.
 
-**Status: 2.0.0-beta.3, testing candidate.** Early user testing on Open WebUI 0.11.4 reports working custom tool selection and memory. Automated protocol tests do not prove every model or tool configuration works; complete the [acceptance tests](docs/testing.md) for your setup. This is an independent community project, not an official Home Assistant or Open WebUI integration.
+**Version 2.0.0 — stable.** User testing on Open WebUI 0.11.4 confirms working custom tools, memory and conversation history after the message-link fix. See the [acceptance tests](docs/testing.md) for checking your model and tool configuration. This is an independent community project, not an official Home Assistant or Open WebUI integration.
 
 ## Why this exists
 
@@ -66,11 +66,13 @@ The fork URL was verified from this repository's Git remote:
 3. Find **Open WebUI Agent**, download, and restart Home Assistant.
 4. Open **Settings → Devices & services → Add integration → Open WebUI Agent**.
 
+Version 2.0.0 installs into `/config/custom_components/openwebui_agent`. The original integration uses `openwebui_conversation`, so the two can be installed separately. If you installed an earlier beta of this fork, follow [Updating and migration](#updating-and-migration) first.
+
 These steps require the maintainer to push this implementation first. This work does not publish it or submit it to the default HACS catalog. HACS is configured to install the integration directory from repository source, without requiring a release ZIP.
 
 ## Manual installation
 
-Copy `custom_components/openwebui_conversation` into your Home Assistant configuration's `custom_components` directory and restart. Add **Open WebUI Agent** through Devices & services. Keep that directory name: it is the internal domain used by existing installations.
+Copy `custom_components/openwebui_agent` into your Home Assistant configuration's `custom_components` directory and restart. Add **Open WebUI Agent** through Devices & services. Keep the `openwebui_agent` directory name; it matches this integration's domain.
 
 ## Home Assistant setup and options
 
@@ -168,7 +170,7 @@ Enable integration logging with:
 logger:
   default: warning
   logs:
-    custom_components.openwebui_conversation: debug
+    custom_components.openwebui_agent: debug
 ```
 
 Logs include versions, shortened chat IDs, model IDs, feature flags, tool counts, missing resource IDs, polling progress, HTTP failure status and phase durations. They do not include prompts, histories, response bodies, tool arguments or API keys. Diagnostics use an allowlist of versions, flags, modes, timeouts, counts and timings; URLs and resource identifiers are omitted. Review even sanitized logs before sharing because model/tool IDs can be personal.
@@ -201,9 +203,15 @@ See [SECURITY.md](SECURITY.md). The key acts with its Open WebUI user's authorit
 
 ## Updating and migration
 
-Back up Home Assistant before replacing the upstream integration. Remove the upstream HACS repository entry if necessary to prevent two repositories managing the same folder; do not delete your HA config entry. Install this fork over the same component folder and restart.
+Version 2.0.0 gives this fork its own `openwebui_agent` domain. Upstream and the earlier betas used `openwebui_conversation`. Their existing config entries are not automatically converted or removed; the new integration needs a one-time setup.
 
-Config-entry migration keeps the `openwebui_conversation` domain, credentials, title/entity identity, URL, model, request timeout, SSL and Markdown settings. Legacy search enablement becomes native Web Search. Old trigger sentences, result prefixes and language settings are retained in options but are inactive. A previously omitted model is not replaced with a guessed ID: select a discovered model in Configure. This fork requires HA 2026.6.0+, so upgrade HA before installing on older systems.
+1. Back up Home Assistant and note your current model, tools and options.
+2. If this fork's beta is already installed through HACS, remove that old HACS installation before installing 2.0.0. It shared the original component folder: if you also keep the upstream integration, redownload upstream to restore its files after removing the beta.
+3. Install this repository through HACS and verify the download destination ends in `/custom_components/openwebui_agent`. Restart Home Assistant.
+4. Add **Open WebUI Agent** in Devices & services using your existing Open WebUI URL/API key, and select your model, tools and options.
+5. Select the new conversation entity in your Assist pipeline and test a multi-turn exchange. Remove an unused beta config entry only after switching; keep any upstream entry you still use.
+
+Subsequent updates retain the new integration's settings. Its conversation mappings and cleanup queue are separate from the old domain; pending beta chat-cleanup records are not imported. Saved Open WebUI memories remain on the server. This integration requires HA 2026.6.0+.
 
 ## Uninstalling
 

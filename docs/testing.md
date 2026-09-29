@@ -1,6 +1,6 @@
 # Manual acceptance tests
 
-These tests require your own configured Home Assistant and Open WebUI instance. They have **not** been run against a live server during this implementation. Save the integration, HA, Open WebUI, model/provider versions and results. Compare with the same Open WebUI API-key user in the browser.
+These tests require your own configured Home Assistant and Open WebUI instance. User testing confirmed tools, memory and the beta.3 conversation-history fix on Open WebUI 0.11.4; the full matrix below has not been independently run against a live server. Save the integration, HA, Open WebUI, model/provider versions and results. Compare with the same Open WebUI API-key user in the browser.
 
 ## Setup
 
@@ -9,6 +9,7 @@ These tests require your own configured Home Assistant and Open WebUI instance. 
 3. Choose model-default tools or select your discovered server tools explicitly. Authorize MCP OAuth in the browser if needed.
 4. Select Open WebUI Agent in an Assist pipeline. Turn off **Prefer handling commands locally** so HA cannot satisfy the test before calling Open WebUI.
 5. Enable integration debug logs and open the Open WebUI chat list. Do not publish unsanitized server logs.
+6. If keeping upstream installed, verify its `openwebui_conversation` entry remains separate from the new `openwebui_agent` entry. Confirm HACS installs each repository into its own folder and Assist uses the intended entity.
 
 ## A. Basic completion
 
@@ -51,7 +52,7 @@ Model choice determines whether to search. A plausible answer without a tool tra
 3. Verify one Open WebUI chat/session, two user nodes, two assistant nodes and correct parent/child links.
 4. Start a separate conversation; verify a different chat and session. Disable Memory for this test if needed to avoid cross-conversation recall by Open WebUI.
 5. Delete the first saved chat, then continue its HA conversation. Confirm a new chat is created once, without a loop.
-6. Reload the integration or restart HA and continue: this beta creates a fresh chat; it does not promise restart continuity.
+6. Reload the integration or restart HA and continue: the integration creates a fresh chat; it does not promise restart continuity.
 
 ## F. Multiple tool rounds
 

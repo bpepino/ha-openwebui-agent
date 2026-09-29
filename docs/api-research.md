@@ -46,7 +46,7 @@ Discovery results are cached for 60 seconds during conversations, as the officia
 
 The same browser reads `info.meta.terminalId` and checks availability and model capability. The integration explicitly sends it only when the user chooses model-default terminal mode. `/api/v1/terminals/` supplies IDs and `contexts`; `contexts.chat: false` is excluded. Saved-chat-scoped terminals receive the real chat ID.
 
-User-local browser selections, attached files, skill/filter selection, per-user browser variables/location, and interactive confirmations are outside this beta. Backend-managed capabilities remain governed by Open WebUI; no invented feature flags are added.
+User-local browser selections, attached files, skill/filter selection, per-user browser variables/location, and interactive confirmations are outside this release. Backend-managed capabilities remain governed by Open WebUI; no invented feature flags are added.
 
 ## Existing Python client assessment
 

@@ -10,18 +10,18 @@ from homeassistant.components.conversation import ConversationInput
 from homeassistant.core import Context
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.openwebui_conversation import async_migrate_entry
-from custom_components.openwebui_conversation.client import (
+from custom_components.openwebui_agent import async_migrate_entry
+from custom_components.openwebui_agent.client import (
     AgentResult,
     ConversationState,
     Resource,
 )
-from custom_components.openwebui_conversation.const import DEFAULT_OPTIONS, DOMAIN
-from custom_components.openwebui_conversation.conversation import OpenWebUIAgent
-from custom_components.openwebui_conversation.diagnostics import (
+from custom_components.openwebui_agent.const import DEFAULT_OPTIONS, DOMAIN
+from custom_components.openwebui_agent.conversation import OpenWebUIAgent
+from custom_components.openwebui_agent.diagnostics import (
     async_get_config_entry_diagnostics,
 )
-from custom_components.openwebui_conversation.exceptions import (
+from custom_components.openwebui_agent.exceptions import (
     AuthenticationError,
     CompletionTimeout,
     PermissionDenied,
@@ -40,7 +40,7 @@ MODELS = [{"id": "custom-model", "name": "My Agent"}]
 def client():
     """Mock only network I/O; run Home Assistant's actual flows."""
     with patch(
-        "custom_components.openwebui_conversation.config_flow.OpenWebUIClient",
+        "custom_components.openwebui_agent.config_flow.OpenWebUIClient",
         autospec=True,
     ) as cls:
         obj = cls.return_value
@@ -51,10 +51,19 @@ def client():
         yield obj
 
 
-async def test_setup_flow(hass, client):
-    """First run validates auth and dynamically populates the model selector."""
+@pytest.mark.parametrize("upstream_installed", [False, True])
+async def test_setup_flow(hass, client, upstream_installed):
+    """Set up independently even when upstream uses the same URL and name."""
+    if upstream_installed:
+        upstream = MockConfigEntry(
+            domain="openwebui_conversation",
+            data=CONNECTION,
+            options={"chat_model": "upstream-model"},
+            version=1,
+        )
+        upstream.add_to_hass(hass)
     with patch(
-        "custom_components.openwebui_conversation.async_setup_entry", return_value=True
+        "custom_components.openwebui_agent.async_setup_entry", return_value=True
     ):
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -90,6 +99,13 @@ async def test_setup_flow(hass, client):
         assert result["type"] == "create_entry"
         assert result["data"]["api_key"] == "fake-key"
         assert result["options"]["tool_ids"] == ["server:mcp:exact"]
+        assert result["result"].domain == "openwebui_agent"
+        if upstream_installed:
+            assert hass.config_entries.async_get_entry(upstream.entry_id) is upstream
+            assert upstream.domain == "openwebui_conversation"
+            assert upstream.data == CONNECTION
+            assert upstream.options == {"chat_model": "upstream-model"}
+            assert upstream.version == 1
 
 
 async def test_invalid_auth(hass, client):
@@ -267,7 +283,7 @@ async def test_setup_unload_and_auth_failure(hass):
     )
     entry.add_to_hass(hass)
     with patch(
-        "custom_components.openwebui_conversation.OpenWebUIClient", autospec=True
+        "custom_components.openwebui_agent.OpenWebUIClient", autospec=True
     ) as cls:
         cls.return_value.async_get_models.return_value = MODELS
         cls.return_value.async_get_version.return_value = "0.11.4"
@@ -360,7 +376,7 @@ async def test_setup_auth_failure_requests_reauth(hass):
     entry = MockConfigEntry(domain=DOMAIN, data=CONNECTION, version=2)
     entry.add_to_hass(hass)
     with patch(
-        "custom_components.openwebui_conversation.OpenWebUIClient", autospec=True
+        "custom_components.openwebui_agent.OpenWebUIClient", autospec=True
     ) as cls:
         cls.return_value.async_get_models.side_effect = AuthenticationError()
         assert not await hass.config_entries.async_setup(entry.entry_id)
@@ -390,7 +406,7 @@ async def test_history_policy_restores_or_cancels_cleanup(hass, hass_storage, ke
         "data": {"chats": {"owned-chat": 9999999999.0}},
     }
     with patch(
-        "custom_components.openwebui_conversation.OpenWebUIClient", autospec=True
+        "custom_components.openwebui_agent.OpenWebUIClient", autospec=True
     ) as cls:
         cls.return_value.async_get_models.return_value = MODELS
         cls.return_value.async_get_version.return_value = "0.11.4"

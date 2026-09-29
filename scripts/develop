@@ -11,7 +11,7 @@ if [[ ! -d "${PWD}/config" ]]; then
 fi
 
 # Set the path to custom_components
-## This lets us have the structure we want <root>/custom_components/openwebui_conversation
+## This lets us have the structure we want <root>/custom_components/openwebui_agent
 ## while at the same time have Home Assistant configuration inside <root>/config
 ## without resulting to symlinks.
 export PYTHONPATH="${PYTHONPATH}:${PWD}"

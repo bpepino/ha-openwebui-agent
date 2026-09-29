@@ -83,7 +83,7 @@ async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Keep the upstream domain, credentials, title and entity identity."""
+    """Upgrade older option schemas within this domain, preserving entry identity."""
     if entry.version > 2:
         return False
     if entry.version == 1:
