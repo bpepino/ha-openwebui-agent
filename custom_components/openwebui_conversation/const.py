@@ -1,36 +1,36 @@
-"""Constants for openwebui_conversation."""
+"""Integration identity and configuration defaults."""
 
-from logging import Logger, getLogger
+from logging import getLogger
 
-LOGGER: Logger = getLogger(__package__)
-
-NAME = "OpenWebUI Conversation"
+LOGGER = getLogger(__package__)
 DOMAIN = "openwebui_conversation"
-
-DO_SEARCH_INTENT = "DoSearch"
-
-MENU_OPTIONS = ["general_config", "model_config", "search_config"]
-
+NAME = "Open WebUI Agent"
+VERSION = "2.0.0-beta.1"
 CONF_SERVICE_NAME = "service_name"
 CONF_BASE_URL = "base_url"
 CONF_API_KEY = "api_key"
-CONF_TIMEOUT = "timeout"
 CONF_MODEL = "chat_model"
-CONF_LANGUAGE_CODE = "lang_code"
-CONF_SEARCH_ENABLED = "search_enabled"
-CONF_SEARCH_SENTENCES = "search_sentences"
-CONF_SEARCH_RESULT_PREFIX = "search_result_prefix"
-CONF_STRIP_MARKDOWN = "strip_markdown"
+CONF_TIMEOUT = "timeout"
 CONF_VERIFY_SSL = "verify_ssl"
-
-DEFAULT_SERVICE_NAME = "OpenWebUI"
-DEFAULT_BASE_URL = "http://openwebui.homeassistant.local"
-DEFAULT_TIMEOUT = 60
-DEFAULT_MODEL = "llama2:latest"
-DEFAULT_LANGUAGE_CODE = "en"
-DEFAULT_SEARCH_ENABLED = False
-DEFAULT_SEARCH_SENTENCES = """look up {query}
-search [the web | the internet] for {query}"""
-DEFAULT_SEARCH_RESULT_PREFIX = "Based on a search of the internet: "
-DEFAULT_STRIP_MARKDOWN = False
-DEFAULT_VERIFY_SSL = True
+CONF_STRIP_MARKDOWN = "strip_markdown"
+CONF_TOOL_MODE = "tool_mode"
+CONF_TOOL_IDS = "tool_ids"
+CONF_TERMINAL_MODE = "terminal_mode"
+CONF_TERMINAL_ID = "terminal_id"
+CONF_COMPLETION_TIMEOUT = "completion_timeout"
+CONF_POLL_INTERVAL = "poll_interval"
+FEATURES = ("memory", "web_search", "code_interpreter", "image_generation")
+DEFAULT_OPTIONS = {
+    CONF_TIMEOUT: 30,
+    CONF_VERIFY_SSL: True,
+    CONF_STRIP_MARKDOWN: True,
+    CONF_COMPLETION_TIMEOUT: 120,
+    CONF_POLL_INTERVAL: 2,
+    CONF_TOOL_MODE: "model",
+    CONF_TOOL_IDS: [],
+    CONF_TERMINAL_MODE: "none",
+    "memory": True,
+    "web_search": True,
+    "code_interpreter": False,
+    "image_generation": False,
+}

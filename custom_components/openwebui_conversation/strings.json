@@ -1,58 +1,185 @@
 {
-    "config": {
-        "step": {
-            "user": {
-                "data": {
-                    "service_name": "Service Name",
-                    "base_url": "Base Url",
-                    "api_key": "API Key",
-                    "timeout": "API Timeout",
-                    "verify_ssl": "Verify SSL"
-                }
-            }
-        },
-        "error": {
-            "cannot_connect": "Failed to connect",
-            "invalid_url": "Invalid URL",
-            "timeout_connect": "Timeout establishing connection",
-            "unknown": "Unexpected error, check logs"
-        },
-        "abort": {
-            "already_configured": "Service is already configured with given name"
+  "title": "Open WebUI Agent",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Open WebUI",
+        "data": {
+          "service_name": "Instance name",
+          "base_url": "Open WebUI URL",
+          "api_key": "API key",
+          "verify_ssl": "Verify SSL",
+          "timeout": "API request timeout (seconds)"
         }
+      },
+      "agent": {
+        "title": "Model and agent features",
+        "description": "Open WebUI runs the agent and its tools. Features also require server configuration and model/user permissions. Code Interpreter requires a server engine such as Jupyter.",
+        "data": {
+          "chat_model": "Open WebUI model",
+          "memory": "Memory",
+          "web_search": "Web Search",
+          "code_interpreter": "Code Interpreter (experimental)",
+          "image_generation": "Image Generation (text only in Assist)",
+          "strip_markdown": "Strip Markdown",
+          "verify_ssl": "Verify SSL",
+          "timeout": "API request timeout (seconds)",
+          "completion_timeout": "Completion timeout (seconds)",
+          "poll_interval": "Polling interval (seconds)"
+        }
+      },
+      "tools": {
+        "title": "Open WebUI tools",
+        "description": "Model defaults read the tools attached to your Open WebUI model. The list below is used only in Custom tool selection mode. An empty custom selection disables external tools; built-in feature settings remain independent. Complete MCP OAuth authorization in Open WebUI first.",
+        "data": {
+          "tool_mode": "Tool mode",
+          "tool_ids": "Available Open WebUI tools"
+        }
+      },
+      "terminal": {
+        "title": "Terminal",
+        "description": "Optional server-side Open Terminal access. Select a terminal only for the specific-terminal mode. Your model and API user must have permission.",
+        "data": {
+          "terminal_mode": "Terminal mode",
+          "terminal_id": "Terminal"
+        }
+      }
     },
-    "options": {
-        "step": {
-            "init": {
-                "menu_options": {
-                    "general_config": "General Settings",
-                    "model_config": "Model Configuration",
-                    "search_config": "Search Configuration"
-                }
-            },
-            "general_config": {
-                "title": "General Settings",
-                "data": {
-                    "timeout": "API Timeout",
-                    "lang_code": "Language Code",
-                    "verify_ssl": "Verify SSL"
-                }
-            },
-            "model_config": {
-                "title": "Model Configuration",
-                "data": {
-                    "chat_model": "Model",
-                    "strip_markdown": "Strip Markdown"
-                }
-            },
-            "search_config": {
-                "title": "Search Configuration",
-                "data": {
-                    "search_enabled": "Search Enabled",
-                    "search_sentences": "Search Trigger Sentences",
-                    "search_result_prefix": "Search Results Message Prefix"
-                }
-            }
-        }
+    "error": {
+      "cannot_connect": "Cannot connect to Open WebUI. Check the URL, network and server logs.",
+      "invalid_auth": "Open WebUI rejected the API key. Check API-key enablement and replace the key.",
+      "permission_denied": "The Open WebUI API user lacks permission. Check user access and API endpoint restrictions.",
+      "not_found": "The Open WebUI resource was not found. Check the server and its API version.",
+      "invalid_response": "Open WebUI returned an unexpected response. Check version compatibility and server logs.",
+      "unsupported_api": "The required native agent API is unavailable. Use current Open WebUI, Native function calling, and enable streaming on the model.",
+      "timeout": "Open WebUI timed out. Increase the timeout if needed. A previously accepted action may still finish; inspect the saved chat before retrying.",
+      "model_missing": "The saved model is unavailable. Its ID is preserved. Select an accessible model or restore its permissions in Open WebUI.",
+      "resource_unavailable": "A selected Open WebUI tool or terminal is unavailable. Check model defaults, access, and MCP OAuth authorization in the browser.",
+      "agent_failed": "Open WebUI did not save a completed text answer. Inspect the Home Assistant chat in Open WebUI for errors or non-text output.",
+      "unexecuted_tool": "Open WebUI returned an unexecuted tool call. Check Native function calling, model tool support and tool assignments. The integration did not execute it.",
+      "invalid_url": "Enter an HTTP or HTTPS base URL without credentials, query parameters or a fragment.",
+      "no_models": "No models are visible to this API key. Check model visibility and user permissions in Open WebUI.",
+      "discovery_partial": "Some resources are unavailable or need OAuth authorization. Saved IDs are preserved. Check permissions in Open WebUI; terminal discovery is optional when no terminal is used.",
+      "terminal_required": "Choose an available terminal, or select None / Use model default terminal."
+    },
+    "abort": {
+      "already_configured": "An instance with this name is already configured.",
+      "reauth_successful": "Authentication updated."
     }
+  },
+  "options": {
+    "step": {
+      "agent": {
+        "title": "Model and agent features",
+        "description": "Open WebUI runs the agent and its tools. Features also require server configuration and model/user permissions. Code Interpreter requires a server engine such as Jupyter.",
+        "data": {
+          "chat_model": "Open WebUI model",
+          "memory": "Memory",
+          "web_search": "Web Search",
+          "code_interpreter": "Code Interpreter (experimental)",
+          "image_generation": "Image Generation (text only in Assist)",
+          "strip_markdown": "Strip Markdown",
+          "verify_ssl": "Verify SSL",
+          "timeout": "API request timeout (seconds)",
+          "completion_timeout": "Completion timeout (seconds)",
+          "poll_interval": "Polling interval (seconds)"
+        }
+      },
+      "tools": {
+        "title": "Open WebUI tools",
+        "description": "Model defaults read the tools attached to your Open WebUI model. The list below is used only in Custom tool selection mode. An empty custom selection disables external tools; built-in feature settings remain independent. Complete MCP OAuth authorization in Open WebUI first.",
+        "data": {
+          "tool_mode": "Tool mode",
+          "tool_ids": "Available Open WebUI tools"
+        }
+      },
+      "terminal": {
+        "title": "Terminal",
+        "description": "Optional server-side Open Terminal access. Select a terminal only for the specific-terminal mode. Your model and API user must have permission.",
+        "data": {
+          "terminal_mode": "Terminal mode",
+          "terminal_id": "Terminal"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to Open WebUI. Check the URL, network and server logs.",
+      "invalid_auth": "Open WebUI rejected the API key. Check API-key enablement and replace the key.",
+      "permission_denied": "The Open WebUI API user lacks permission. Check user access and API endpoint restrictions.",
+      "not_found": "The Open WebUI resource was not found. Check the server and its API version.",
+      "invalid_response": "Open WebUI returned an unexpected response. Check version compatibility and server logs.",
+      "unsupported_api": "The required native agent API is unavailable. Use current Open WebUI, Native function calling, and enable streaming on the model.",
+      "timeout": "Open WebUI timed out. Increase the timeout if needed. A previously accepted action may still finish; inspect the saved chat before retrying.",
+      "model_missing": "The saved model is unavailable. Its ID is preserved. Select an accessible model or restore its permissions in Open WebUI.",
+      "resource_unavailable": "A selected Open WebUI tool or terminal is unavailable. Check model defaults, access, and MCP OAuth authorization in the browser.",
+      "agent_failed": "Open WebUI did not save a completed text answer. Inspect the Home Assistant chat in Open WebUI for errors or non-text output.",
+      "unexecuted_tool": "Open WebUI returned an unexecuted tool call. Check Native function calling, model tool support and tool assignments. The integration did not execute it.",
+      "invalid_url": "Enter an HTTP or HTTPS base URL without credentials, query parameters or a fragment.",
+      "no_models": "No models are visible to this API key. Check model visibility and user permissions in Open WebUI.",
+      "discovery_partial": "Some resources are unavailable or need OAuth authorization. Saved IDs are preserved. Check permissions in Open WebUI; terminal discovery is optional when no terminal is used.",
+      "terminal_required": "Choose an available terminal, or select None / Use model default terminal."
+    }
+  },
+  "selector": {
+    "tool_mode": {
+      "options": {
+        "model": "Use Open WebUI model defaults",
+        "custom": "Custom tool selection"
+      }
+    },
+    "terminal_mode": {
+      "options": {
+        "none": "None",
+        "model": "Use model default terminal",
+        "custom": "Specific terminal"
+      }
+    }
+  },
+  "exceptions": {
+    "cannot_connect": {
+      "message": "Cannot connect to Open WebUI. Check the URL, network and server logs."
+    },
+    "invalid_auth": {
+      "message": "Open WebUI rejected the API key. Check API-key enablement and replace the key."
+    },
+    "permission_denied": {
+      "message": "The Open WebUI API user lacks permission. Check user access and API endpoint restrictions."
+    },
+    "not_found": {
+      "message": "The Open WebUI resource was not found. Check the server and its API version."
+    },
+    "invalid_response": {
+      "message": "Open WebUI returned an unexpected response. Check version compatibility and server logs."
+    },
+    "unsupported_api": {
+      "message": "The required native agent API is unavailable. Use current Open WebUI, Native function calling, and enable streaming on the model."
+    },
+    "timeout": {
+      "message": "Open WebUI timed out. Increase the timeout if needed. A previously accepted action may still finish; inspect the saved chat before retrying."
+    },
+    "model_missing": {
+      "message": "The saved model is unavailable. Its ID is preserved. Select an accessible model or restore its permissions in Open WebUI."
+    },
+    "resource_unavailable": {
+      "message": "A selected Open WebUI tool or terminal is unavailable. Check model defaults, access, and MCP OAuth authorization in the browser."
+    },
+    "agent_failed": {
+      "message": "Open WebUI did not save a completed text answer. Inspect the Home Assistant chat in Open WebUI for errors or non-text output."
+    },
+    "unexecuted_tool": {
+      "message": "Open WebUI returned an unexecuted tool call. Check Native function calling, model tool support and tool assignments. The integration did not execute it."
+    },
+    "invalid_url": {
+      "message": "Enter an HTTP or HTTPS base URL without credentials, query parameters or a fragment."
+    },
+    "no_models": {
+      "message": "No models are visible to this API key. Check model visibility and user permissions in Open WebUI."
+    },
+    "discovery_partial": {
+      "message": "Some resources are unavailable or need OAuth authorization. Saved IDs are preserved. Check permissions in Open WebUI; terminal discovery is optional when no terminal is used."
+    },
+    "terminal_required": {
+      "message": "Choose an available terminal, or select None / Use model default terminal."
+    }
+  }
 }

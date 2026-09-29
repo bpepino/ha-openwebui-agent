@@ -1,7 +1,4 @@
 {
-    "name": "OpenWebUI Conversation",
-    "filename": "openwebui_conversation.zip",
-    "hide_default_branch": true,
-    "homeassistant": "2025.6",
-    "zip_release": true
+  "name": "Open WebUI Agent",
+  "homeassistant": "2026.6.0"
 }

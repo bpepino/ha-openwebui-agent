@@ -1,70 +1,78 @@
-"""Custom integration to integrate openwebui_conversation with Home Assistant.
-"""
-
-from __future__ import annotations
+"""Home Assistant lifecycle for Open WebUI Agent."""
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import OpenWebUIApiClient
-from .const import (
-    DOMAIN,
-    CONF_BASE_URL,
-    CONF_API_KEY,
-    CONF_TIMEOUT,
-    CONF_VERIFY_SSL,
-    DEFAULT_TIMEOUT,
-    DEFAULT_VERIFY_SSL,
-)
-from .coordinator import OpenWebUIDataUpdateCoordinator
-from .exceptions import ApiClientError, ApiCommError, ApiJsonError, ApiTimeoutError
+from .client import OpenWebUIClient
+from .const import DEFAULT_OPTIONS, DOMAIN, LOGGER, VERSION
+from .exceptions import AuthenticationError, OpenWebUIError
+from .migration import migrate_options
+from .state import ConversationManager
 
 PLATFORMS = (Platform.CONVERSATION,)
 
 
-# https://developers.home-assistant.io/docs/config_entries_index/#setting-up-an-entry
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up OpenWebUI conversation using UI."""
-    client = OpenWebUIApiClient(
-        base_url=entry.data[CONF_BASE_URL],
-        api_key=entry.data[CONF_API_KEY],
-        timeout=entry.options.get(CONF_TIMEOUT, DEFAULT_TIMEOUT),
-        session=async_get_clientsession(hass),
-        verify_ssl=entry.options.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL),
+    """Validate authentication before creating the conversation entity."""
+    options = {**DEFAULT_OPTIONS, **entry.options}
+    client = OpenWebUIClient(
+        entry.data["base_url"],
+        entry.data["api_key"],
+        async_get_clientsession(hass),
+        options["timeout"],
+        options["verify_ssl"],
     )
-
-    coordinator = OpenWebUIDataUpdateCoordinator(hass, client)
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
-    # https://developers.home-assistant.io/docs/integration_fetching_data#coordinated-single-api-poll-for-data-for-all-entities
-    await coordinator.async_config_entry_first_refresh()
-
     try:
-        response = await client.async_get_heartbeat()
-        if not response:
-            raise ApiClientError("Invalid OpenWebUI server")
-    except ApiClientError as err:
-        raise ConfigEntryNotReady(err) from err
-
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
+        await client.async_get_models()
+        await client.async_get_version()
+    except AuthenticationError as err:
+        raise ConfigEntryAuthFailed("Open WebUI API key was rejected") from err
+    except OpenWebUIError as err:
+        raise ConfigEntryNotReady(
+            "Open WebUI connection or API is unavailable"
+        ) from err
+    manager = ConversationManager(client)
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = manager
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except Exception:
+        await manager.async_close()
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        raise
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+    LOGGER.debug("Open WebUI Agent %s initialized", VERSION)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload OpenWebUI conversation."""
+    """Unload the entity and cancel pending local requests."""
     if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         return False
-    if DOMAIN in hass.data:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
-        if not hass.data[DOMAIN]:
-            hass.data.pop(DOMAIN)
+    manager = hass.data[DOMAIN].pop(entry.entry_id)
+    await manager.async_close()
     return True
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload OpenWebUI conversation."""
-    await async_unload_entry(hass, entry)
-    await async_setup_entry(hass, entry)
+    """Apply changed options using Home Assistant's reload lifecycle."""
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Keep the upstream domain, credentials, title and entity identity."""
+    if entry.version > 2:
+        return False
+    if entry.version == 1:
+        hass.config_entries.async_update_entry(
+            entry,
+            options=migrate_options(dict(entry.data), dict(entry.options)),
+            version=2,
+            minor_version=1,
+        )
+        LOGGER.info(
+            "Migrated to native Web Search; legacy search phrases are retained but inactive"
+        )
+    return True
