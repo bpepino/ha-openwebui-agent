@@ -5,6 +5,8 @@ __pycache__
 */build/*
 */dist/*
 venv/
+.venv/
+.research/
 .ruff_cache
 
 
