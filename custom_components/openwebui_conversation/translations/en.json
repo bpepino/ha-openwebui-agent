@@ -27,11 +27,13 @@
           "completion_timeout": "Completion timeout (seconds)",
           "poll_interval": "Polling interval (seconds)",
           "thinking_mode": "Thinking",
-          "keep_chat_history": "Keep chat history in Open WebUI"
+          "keep_chat_history": "Keep chat history in Open WebUI",
+          "conversation_mode": "Continue listening"
         },
         "data_description": {
           "thinking_mode": "Disabled sends reasoning_effort: none. Supported by NInfer and compatible models; providers without this setting may reject it. Model default keeps your server settings.",
-          "keep_chat_history": "Off: delete chats created by this integration after 15 minutes idle. Active-session follow-ups keep their context. Saved Open WebUI Memory is separate. On: retain chats and cancel pending cleanup. Older untracked chats are untouched."
+          "keep_chat_history": "Off: delete chats created by this integration after 15 minutes idle. Active-session follow-ups keep their context. Saved Open WebUI Memory is separate. On: retain chats and cancel pending cleanup. Older untracked chats are untouched.",
+          "conversation_mode": "Questions continues when the reply ends in a question. Say \"let's talk\" to keep the current session listening, or \"end conversation\" to stop. Always continues after every successful reply. Requires a compatible Assist satellite."
         }
       },
       "tools": {
@@ -90,11 +92,13 @@
           "completion_timeout": "Completion timeout (seconds)",
           "poll_interval": "Polling interval (seconds)",
           "thinking_mode": "Thinking",
-          "keep_chat_history": "Keep chat history in Open WebUI"
+          "keep_chat_history": "Keep chat history in Open WebUI",
+          "conversation_mode": "Continue listening"
         },
         "data_description": {
           "thinking_mode": "Disabled sends reasoning_effort: none. Supported by NInfer and compatible models; providers without this setting may reject it. Model default keeps your server settings.",
-          "keep_chat_history": "Off: delete chats created by this integration after 15 minutes idle. Active-session follow-ups keep their context. Saved Open WebUI Memory is separate. On: retain chats and cancel pending cleanup. Older untracked chats are untouched."
+          "keep_chat_history": "Off: delete chats created by this integration after 15 minutes idle. Active-session follow-ups keep their context. Saved Open WebUI Memory is separate. On: retain chats and cancel pending cleanup. Older untracked chats are untouched.",
+          "conversation_mode": "Questions continues when the reply ends in a question. Say \"let's talk\" to keep the current session listening, or \"end conversation\" to stop. Always continues after every successful reply. Requires a compatible Assist satellite."
         }
       },
       "tools": {
@@ -150,6 +154,12 @@
       "options": {
         "model": "Use model default",
         "disabled": "Disabled"
+      }
+    },
+    "conversation_mode": {
+      "options": {
+        "questions": "Questions or \"let's talk\"",
+        "always": "Always continue"
       }
     }
   },

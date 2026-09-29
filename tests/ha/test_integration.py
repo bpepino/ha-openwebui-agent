@@ -195,6 +195,28 @@ async def test_assist_final_response_and_translated_error(hass):
     assert result.continue_conversation is True
     assert result.conversation_id == conversation_id
     assert manager.async_process.call_args.args[0] == conversation_id
+    manager.async_process.return_value.text = "Okay."
+    user.text = "Let's talk!"
+    result = await agent.async_process(user)
+    assert result.continue_conversation is True
+    user.text = "Tell me something"
+    result = await agent.async_process(user)
+    assert result.continue_conversation is True
+    user.conversation_id = None
+    result = await agent.async_process(user)
+    assert result.continue_conversation is False
+    user.conversation_id = conversation_id
+    user.text = "End conversation."
+    result = await agent.async_process(user)
+    assert result.continue_conversation is False
+    user.text = "Hello"
+    result = await agent.async_process(user)
+    assert result.continue_conversation is False
+    hass.config_entries.async_update_entry(
+        entry, options={"conversation_mode": "always"}
+    )
+    result = await agent.async_process(user)
+    assert result.continue_conversation is True
     manager.async_process.side_effect = CompletionTimeout()
     result = await agent.async_process(user)
     assert "timed out" in result.response.speech["plain"]["speech"]

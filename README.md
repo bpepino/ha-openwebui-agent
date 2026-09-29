@@ -92,6 +92,7 @@ Conversations reuse discovery metadata for up to 60 seconds. Saving Configure or
 | Image Generation | Off | Open WebUI may create images; Assist receives text only |
 | Tool mode | Model defaults | Read `info.meta.toolIds` and send exact accessible IDs |
 | Thinking | Model default | Disabled requests `reasoning_effort: none`, supported by NInfer and compatible providers |
+| Continue listening | Questions or "let's talk" | Continue on questions; voice command enables hands-free conversation for the current session |
 | Keep chat history | Off | Delete integration-created chats after 15 minutes idle; preserve active-session follow-ups |
 | Terminal | None | Explicitly opt into model-default or selected terminal access |
 | Request timeout | 30 seconds | Maximum time for one HTTP request |
@@ -152,6 +153,8 @@ A manually deleted chat is recovered once by creating a new one. Avoid editing a
 ## Voice / Assist
 
 Only the final assistant prose is returned. Structured reasoning and tool events are excluded, with the last assistant message used after tool rounds. Strip Markdown affects TTS only. Agent requests can take longer than a voice pipeline's own limit; increasing this integration's timeout does not change the pipeline's timeout.
+
+On supported satellites, a reply ending in a question uses HA's built-in follow-up detection to listen again. Say **"let's talk"** (also "lets talk", "let us talk", or "start conversation mode") to continue after statements too, for the current session. Say **"end conversation"**, "stop talking", or "that's all" to stop. These optional voice commands currently use English phrases. **Continue listening → Always continue** requests another turn after every successful reply, with the same stop commands. Errors end automatic listening. The satellite still controls silence timeouts and wake-word behavior. The commands are forwarded unchanged to Open WebUI; no additional system prompt or message rewriting is introduced.
 
 **Thinking → Disabled** requests actual reasoning disablement, rather than just hiding reasoning in speech. It passes `reasoning_effort: none` through Open WebUI; [NInfer documents this setting](https://github.com/Neroued/ninfer/blob/master/docs/serving.md). Other providers may not support it. Remove conflicting explicit `enable_thinking: true` settings from the Workspace model if applicable. Model default leaves reasoning settings to Open WebUI/provider defaults. Changing thinking mode can require a fresh prompt prefill; subsequent requests keep the same setting.
 

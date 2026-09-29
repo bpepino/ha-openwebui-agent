@@ -16,7 +16,7 @@ The protocol/state tests run on Python 3.12+ without Home Assistant. Full HA tes
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements-test.txt
-python -m pytest tests/test_client.py tests/test_migration.py
+python -m pytest tests/test_client.py tests/test_migration.py tests/test_history.py
 python -m ruff check .
 python -m ruff format --check .
 ```

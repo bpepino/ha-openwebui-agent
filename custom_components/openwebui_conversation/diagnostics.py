@@ -22,6 +22,7 @@ async def async_get_config_entry_diagnostics(
         "selected_tool_count": len(options["tool_ids"]),
         "terminal_mode": options["terminal_mode"],
         "thinking_mode": options["thinking_mode"],
+        "conversation_mode": options["conversation_mode"],
         "keep_chat_history": options["keep_chat_history"],
         "pending_chat_cleanup_count": manager.cleaner.pending_count
         if manager.cleaner

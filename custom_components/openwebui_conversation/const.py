@@ -30,6 +30,7 @@ DEFAULT_OPTIONS = {
     CONF_TOOL_IDS: [],
     CONF_TERMINAL_MODE: "none",
     "thinking_mode": "model",
+    "conversation_mode": "questions",
     "keep_chat_history": False,
     "memory": True,
     "web_search": True,

@@ -8,6 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import MATCH_ALL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import intent, translation
+from homeassistant.helpers.chat_session import async_get_chat_session
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from markdown_it import MarkdownIt
 from mdit_plain.renderer import RendererPlain
@@ -36,6 +37,36 @@ class OpenWebUIAgent(conversation.ConversationEntity):
         self._attr_unique_id = entry.entry_id
         self._attr_name = entry.title
         self._markdown = MarkdownIt(renderer_cls=RendererPlain)
+        self._talk_sessions: set[str] = set()
+
+    def _continue_conversation(
+        self, user_input: conversation.ConversationInput, chat_log: ChatLog
+    ) -> bool:
+        """Use HA's question detector plus session-scoped voice conversation mode."""
+        phrase = (
+            user_input.text.casefold().strip().rstrip(".!?;，。？！").replace("’", "'")
+        )
+        conversation_id = chat_log.conversation_id
+        if phrase in ("end conversation", "stop talking", "that's all", "that is all"):
+            self._talk_sessions.discard(conversation_id)
+            return False
+        if phrase in (
+            "let's talk",
+            "lets talk",
+            "let us talk",
+            "start conversation mode",
+        ):
+            if conversation_id not in self._talk_sessions:
+                self._talk_sessions.add(conversation_id)
+                with async_get_chat_session(self.hass, conversation_id) as session:
+                    session.async_on_cleanup(
+                        lambda: self._talk_sessions.discard(conversation_id)
+                    )
+        return (
+            self.entry.options.get("conversation_mode", "questions") == "always"
+            or conversation_id in self._talk_sessions
+            or chat_log.continue_conversation
+        )
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -77,11 +108,11 @@ class OpenWebUIAgent(conversation.ConversationEntity):
                 "strip_markdown", DEFAULT_OPTIONS["strip_markdown"]
             ):
                 text = self._markdown.render(text).strip()
-            chat_log.async_add_assistant_content(
+            chat_log.async_add_assistant_content_without_tools(
                 AssistantContent(agent_id=self.entity_id, content=text)
             )
             response.async_set_speech(text)
-            continue_conversation = chat_log.continue_conversation
+            continue_conversation = self._continue_conversation(user_input, chat_log)
         return conversation.ConversationResult(
             response=response,
             conversation_id=chat_log.conversation_id,

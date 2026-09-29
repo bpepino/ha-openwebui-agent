@@ -67,6 +67,9 @@ def model_schema(values: dict, models: list[dict]) -> vol.Schema:
     schema[vol.Required("thinking_mode", default=values["thinking_mode"])] = select(
         ["model", "disabled"], translation_key="thinking_mode"
     )
+    schema[vol.Required("conversation_mode", default=values["conversation_mode"])] = (
+        select(["questions", "always"], translation_key="conversation_mode")
+    )
     for key in (*FEATURES, "strip_markdown", "verify_ssl", "keep_chat_history"):
         schema[vol.Required(key, default=values[key])] = bool
     for key, maximum in (

@@ -2,6 +2,8 @@
 
 This records the initial beta.1 implementation and validation. Subsequent beta.2 resource errors, discovery caching, timing diagnostics and user testing are recorded in the [changelog](../CHANGELOG.md); current behavior is documented in the [README](../README.md).
 
+Beta.2 follow-up validation (2026-09-29): **81 tests passed** on Linux/Python 3.14.7/HA 2026.6.0; **69 portable tests passed** on Windows. Ruff lint and formatting passed (27 Python files); official hassfest passed with **1 integration, 0 invalid**. This covers the HA chat-log correction, voice controls, retention lifecycle and thinking request payload. The new satellite/retention/thinking behavior still needs live acceptance testing; working tools and memory on Open WebUI 0.11.4 were user-reported with beta.1. HACS validation remains delegated to the configured GitHub workflow after the maintainer pushes.
+
 ## 1. Architecture
 
 Assist uses Home Assistant's ConversationEntity/ChatLog lifecycle to obtain a conversation ID and send the user's original text to the integration's state manager. A dedicated async client creates or continues a saved Open WebUI chat, submits a native streaming completion, polls server tasks, and reads the exact assistant placeholder after completion. Open WebUI alone discovers/executes tools and performs all model/tool rounds. Only final assistant prose reaches Assist/TTS; no Home Assistant LLM API, entity tool registration or service executor exists.
