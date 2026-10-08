@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.1.0 — unreleased
+
+- Add **gateway mode**: a new connection choice that sends Assist turns to a home AI gateway (`POST /assistant/v1/turns`) with an API client token, instead of talking to Open WebUI directly. The gateway owns the model, tools, features, thinking, speaker identity, conversation continuation and chat retention; setup and Configure show only the answer timeout, request timeout, SSL verification, Continue listening and Strip Markdown.
+- Gateway turns forward HA's conversation ID, language, device ID (or satellite entity ID), the device's area name and `extra_system_prompt`. Speech uses the gateway's TTS-ready `speech_text`; the Assist chat log gets `display_text`. The gateway's `expects_reply` also keeps satellites listening; stop phrases still win.
+- Map every gateway error code to this integration's error keys, so existing translations keep working. New short, speakable messages for an unreachable gateway, a rejected token, a wrong URL, non-speech, an unavailable voice pipeline, an invalid request, gateway configuration and internal errors, and "still working" when the deadline passes after the gateway accepted a turn (never retried).
+- Setup validates the URL and token with `GET /assistant/v1/health`; a revoked token starts reauthentication. Diagnostics show the backend and the gateway's health (no URL or token).
+- Direct Open WebUI mode is unchanged and remains the default; existing entries keep working without changes. An unknown error key now falls back to English, then to the gateway's own message, instead of failing.
+
+Validation: 128 portable tests passed (57 new gateway-client tests against a simulated gateway over real HTTP), Ruff lint/format passed, and the request bodies were validated with the gateway's own `TurnBody` model. New Home Assistant fixture tests for gateway mode (`tests/ha/test_gateway.py`) were added but not run locally (Windows, no Python 3.14); CI runs them. No live gateway acceptance test yet.
+
 ## 2.0.0 — 2026-09-29
 
 - Promote the tested beta.3 agent protocol to the first stable release.

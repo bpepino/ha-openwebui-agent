@@ -14,7 +14,14 @@ from homeassistant.helpers.selector import (
 )
 
 from .client import Resource
-from .const import CONF_MODEL, FEATURES, NAME
+from .const import (
+    BACKEND_OPENWEBUI,
+    BACKENDS,
+    CONF_BACKEND,
+    CONF_MODEL,
+    FEATURES,
+    NAME,
+)
 
 
 def select(
@@ -32,10 +39,23 @@ def select(
     return SelectSelector(config)
 
 
-def connection_schema(values: dict) -> vol.Schema:
-    """Build a connection form with a password selector for the API key."""
+def connection_schema(values: dict, *, backend_choice: bool = True) -> vol.Schema:
+    """Build a connection form with a password selector for the API key.
+
+    The URL and key fields serve both backends: the Open WebUI URL and API key,
+    or the gateway URL and its API client token. Reauthentication keeps the
+    entry's backend, so it hides the choice.
+    """
+    schema: dict[Any, Any] = {}
+    if backend_choice:
+        schema[
+            vol.Required(
+                CONF_BACKEND, default=values.get(CONF_BACKEND, BACKEND_OPENWEBUI)
+            )
+        ] = select(list(BACKENDS), translation_key="backend")
     return vol.Schema(
         {
+            **schema,
             vol.Required("service_name", default=values.get("service_name", NAME)): str,
             vol.Required("base_url", default=values.get("base_url", "")): str,
             vol.Required("api_key"): TextSelector(
@@ -80,6 +100,24 @@ def model_schema(values: dict, models: list[dict]) -> vol.Schema:
         schema[vol.Required(key, default=values[key])] = vol.All(
             vol.Coerce(int), vol.Range(min=1, max=maximum)
         )
+    return vol.Schema(schema)
+
+
+def gateway_schema(values: dict, *, connection: bool) -> vol.Schema:
+    """Gateway mode: only how HA waits and listens; the gateway owns the agent."""
+    schema: dict[Any, Any] = {}
+    if connection:
+        schema[vol.Required("verify_ssl", default=values["verify_ssl"])] = bool
+        schema[vol.Required("timeout", default=values["timeout"])] = vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=300)
+        )
+    schema[vol.Required("completion_timeout", default=values["completion_timeout"])] = (
+        vol.All(vol.Coerce(int), vol.Range(min=1, max=3600))
+    )
+    schema[vol.Required("conversation_mode", default=values["conversation_mode"])] = (
+        select(["questions", "always"], translation_key="conversation_mode")
+    )
+    schema[vol.Required("strip_markdown", default=values["strip_markdown"])] = bool
     return vol.Schema(schema)
 
 

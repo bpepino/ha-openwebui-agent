@@ -11,8 +11,19 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 
 from .client import OpenWebUIClient
-from .const import DEFAULT_OPTIONS, DOMAIN, LOGGER, VERSION
+from .const import (
+    BACKEND_GATEWAY,
+    CONF_GATEWAY_TOKEN,
+    CONF_GATEWAY_URL,
+    DEFAULT_OPTIONS,
+    DOMAIN,
+    GATEWAY_DEFAULT_OPTIONS,
+    LOGGER,
+    VERSION,
+    entry_backend,
+)
 from .exceptions import AuthenticationError, OpenWebUIError
+from .gateway_client import GatewayClient
 from .history import ChatHistoryCleaner
 from .migration import migrate_options
 from .state import ConversationManager
@@ -20,8 +31,43 @@ from .state import ConversationManager
 PLATFORMS = (Platform.CONVERSATION,)
 
 
+async def _async_setup_gateway(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Gateway mode: check URL and token; the gateway owns chats and retention."""
+    options = {**GATEWAY_DEFAULT_OPTIONS, **entry.options}
+    client = GatewayClient(
+        entry.data[CONF_GATEWAY_URL],
+        entry.data[CONF_GATEWAY_TOKEN],
+        async_get_clientsession(hass),
+        options["timeout"],
+        options["verify_ssl"],
+    )
+    try:
+        health = await client.async_health()
+    except AuthenticationError as err:
+        raise ConfigEntryAuthFailed(
+            "The gateway rejected the API client token"
+        ) from err
+    except OpenWebUIError as err:
+        raise ConfigEntryNotReady("The AI gateway is unavailable") from err
+    if not health["openwebui"].get("reachable"):
+        # Turns report this themselves; the gateway may recover without a reload.
+        LOGGER.warning("The AI gateway reports Open WebUI as unreachable")
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = client
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except Exception:
+        await client.async_close()
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        raise
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+    LOGGER.debug("Open WebUI Agent %s initialized in gateway mode", VERSION)
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Validate authentication before creating the conversation entity."""
+    if entry_backend(entry.data) == BACKEND_GATEWAY:
+        return await _async_setup_gateway(hass, entry)
     options = {**DEFAULT_OPTIONS, **entry.options}
     client = OpenWebUIClient(
         entry.data["base_url"],

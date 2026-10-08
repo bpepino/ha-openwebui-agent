@@ -4,7 +4,7 @@
 
 A HACS custom conversation integration that sends Assist text to a real Open WebUI chat and waits for Open WebUI to finish its native server-side agent loop. Open WebUI chooses tools, executes them, processes their results, and produces the final response for Assist/TTS.
 
-**Version 2.0.0 — stable.** User testing on Open WebUI 0.11.4 confirms working custom tools, memory and conversation history after the message-link fix. See the [acceptance tests](docs/testing.md) for checking your model and tool configuration. This is an independent community project, not an official Home Assistant or Open WebUI integration.
+**Version 2.1.0.** User testing of 2.0.0 on Open WebUI 0.11.4 confirms working custom tools, memory and conversation history after the message-link fix. See the [acceptance tests](docs/testing.md) for checking your model and tool configuration. 2.1.0 adds an optional [gateway mode](#gateway-mode) that talks to a home AI gateway instead of Open WebUI; direct mode is unchanged and stays the default. This is an independent community project, not an official Home Assistant or Open WebUI integration.
 
 ## Why this exists
 
@@ -42,7 +42,7 @@ These are implemented API paths, not a claim that every server feature has been 
 ## Requirements
 
 - Home Assistant **2026.6.0 or newer**. The old development configuration already pinned this version; the fork now makes that minimum explicit and uses its supported conversation lifecycle.
-- An Open WebUI instance reachable from Home Assistant, an enabled API key, and permission to use the required endpoints.
+- An Open WebUI instance reachable from Home Assistant, an enabled API key, and permission to use the required endpoints. In [gateway mode](#gateway-mode) Home Assistant needs only the gateway and an API client token; the gateway needs Open WebUI.
 - A model/provider that supports **Native function calling**, with streaming enabled. Clear a model's `Stream Chat Response = false` override.
 - Current Open WebUI APIs described in [Server-Side Tool Calling](https://docs.openwebui.com/reference/server-side-tool-calling/). The source inspected identifies itself as **0.11.4**; see the [exact revision and compatibility assessment](docs/api-research.md). No numeric minimum or live-tested Open WebUI range has been established. A matching version number alone is not proof of compatibility.
 
@@ -66,7 +66,7 @@ The fork URL was verified from this repository's Git remote:
 3. Find **Open WebUI Agent**, download, and restart Home Assistant.
 4. Open **Settings → Devices & services → Add integration → Open WebUI Agent**.
 
-Version 2.0.0 installs into `/config/custom_components/openwebui_agent`. The original integration uses `openwebui_conversation`, so the two can be installed separately. If you installed an earlier beta of this fork, follow [Updating and migration](#updating-and-migration) first.
+Version 2.0.0 and later install into `/config/custom_components/openwebui_agent`. The original integration uses `openwebui_conversation`, so the two can be installed separately. If you installed an earlier beta of this fork, follow [Updating and migration](#updating-and-migration) first.
 
 These steps require the maintainer to push this implementation first. This work does not publish it or submit it to the default HACS catalog. HACS is configured to install the integration directory from repository source, without requiring a release ZIP.
 
@@ -103,6 +103,67 @@ Conversations reuse discovery metadata for up to 60 seconds. Saving Configure or
 | Strip Markdown | On | Clean only the final spoken text |
 
 Model/resource discovery happens before the completion deadline and is bounded by individual request timeouts.
+
+## Gateway mode
+
+Gateway mode sends Assist turns to a home AI gateway's assistant API (`/assistant/v1`) instead of to Open WebUI. The gateway runs the same saved-chat Open WebUI agent protocol described above, but centrally: one place decides the model and tools for every client (Home Assistant, a watch, ...) and who is speaking. Direct Open WebUI mode is unchanged and remains the default; existing entries are not touched.
+
+### Set up
+
+1. In the gateway dashboard open **Gateway → API clients → Create client** with kind `ha` and the household's default speaker as default user. Copy the token now; it is shown only once.
+2. In Home Assistant add **Open WebUI Agent** and choose **Connection: AI gateway**.
+   - **Open WebUI or gateway URL:** the gateway, for example `http://192.168.1.20:8000` (the voice proxy's host and port), not the Open WebUI URL.
+   - **API key or gateway token:** the token from step 1.
+
+   Setup calls `GET /assistant/v1/health` with the token. A rejected token, a wrong URL and an unreachable gateway are reported separately. If the gateway is up but cannot reach Open WebUI, setup still succeeds and the next step shows the status.
+3. Choose **Answer timeout**, **Continue listening** and **Strip Markdown**, then select the new conversation entity in your Assist pipeline.
+
+**Configure** shows only those settings plus SSL verification and the request timeout. A revoked token starts Home Assistant's reauthentication, which asks for a new token and keeps the entry in gateway mode.
+
+### What the gateway decides
+
+- **Model, tools, features and thinking:** the API client's assistant profile (model, tool selection, Memory, Web Search, thinking, background tasks). The Open WebUI options of direct mode are hidden.
+- **Who is speaking:** each turn runs as a household member with that member's own Open WebUI key, so memory and tool permissions follow the person. Home Assistant cannot assert a speaker: the gateway uses the token's default user, or the speaker its own voice pipeline identified for the same transcript.
+- **Conversations and chat history:** Home Assistant's conversation ID maps to a gateway conversation. The gateway decides when a new Open WebUI chat starts and deletes idle chats according to the profile. This integration's 15-minute cleanup and in-memory mappings are not used in gateway mode.
+- **Context and answer shaping:** the gateway writes a `[gateway speaker=… device=… area=… lang=…]` line into the stored user message, and returns a display text and a speech text without Markdown, links or URLs. Its `expects_reply` hint (the answer asks a question) also keeps a satellite listening.
+
+### What Home Assistant sends
+
+The text exactly as recognized, HA's conversation ID, the language, the device ID (or the satellite entity ID), the device's area name, HA's `extra_system_prompt` (for example from `assist_satellite.start_conversation`) and the answer timeout:
+
+```json
+{
+  "conversation_id": "01JHAEXAMPLE0000000000000",
+  "text": "Turn on the office light",
+  "language": "en",
+  "device_id": "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d",
+  "area": "Office",
+  "extra_instructions": "Keep it short.",
+  "timeout_s": 120,
+  "response": {"speech": false, "stream": false}
+}
+```
+
+Fields without a value are left out. The Home Assistant user ID is not sent yet: the gateway's request model has no field for it.
+
+Home Assistant still owns the voice controls ("let's talk", "end conversation", **Continue listening**), Markdown stripping for the Assist chat, and translated error messages. Speech always uses the gateway's speech text.
+
+### Timeouts and errors
+
+**Answer timeout** (default 120 seconds) is sent as `timeout_s`; the gateway's profile can only shorten it. Home Assistant waits that long plus the request timeout for the reply. If the deadline passes after the gateway accepted the turn, you hear "I'm still working on that": the request may still finish and act, so don't repeat it. Nothing is retried automatically.
+
+| You hear | Meaning |
+| --- | --- |
+| I can't reach the assistant gateway right now. | The gateway is down or the URL/port is wrong. |
+| The assistant gateway rejected this Home Assistant token. | The token was revoked; reauthenticate. |
+| Cannot connect to Open WebUI … / Open WebUI rejected the API key … | The gateway reached the turn but Open WebUI failed, or the household member's Open WebUI key is missing or invalid. Fix it in the gateway. |
+| The assistant gateway is not set up for this device yet. | The API client's profile or user is incomplete in the gateway. |
+
+Diagnostics in gateway mode contain the backend, the gateway's health (status, Open WebUI reachability and version, voice pipeline and retention flags), the settings above, the last turn's timings in milliseconds and its identity confidence. They never contain the URL or the token.
+
+### Rollback
+
+Keep, or add again, a direct **Open WebUI** entry with a different instance name. Both entries can exist at the same time; switching back is choosing the direct entry's conversation entity in the Assist pipeline. Downgrading the integration to 2.0.0 leaves gateway entries unable to load, so remove them before downgrading.
 
 ## Models, tools and terminals
 
@@ -212,6 +273,8 @@ Version 2.0.0 gives this fork its own `openwebui_agent` domain. Upstream and the
 5. Select the new conversation entity in your Assist pipeline and test a multi-turn exchange. Remove an unused beta config entry only after switching; keep any upstream entry you still use.
 
 Subsequent updates retain the new integration's settings. Its conversation mappings and cleanup queue are separate from the old domain; pending beta chat-cleanup records are not imported. Saved Open WebUI memories remain on the server. This integration requires HA 2026.6.0+.
+
+Updating 2.0.0 to 2.1.0 changes nothing for existing entries: they stay in direct Open WebUI mode. Add a second entry to try [gateway mode](#gateway-mode).
 
 ## Uninstalling
 

@@ -5,6 +5,11 @@ class OpenWebUIError(Exception):
     """Base client error with a Home Assistant translation key."""
 
     key = "cannot_connect"
+    # Gateway mode: the envelope's short English message, used only when no
+    # translation exists for ``key`` (never credentials or user text), and the
+    # conversation the failure belongs to.
+    server_message: str | None = None
+    conversation_id: str | None = None
 
 
 class AuthenticationError(OpenWebUIError):
@@ -41,6 +46,14 @@ class CompletionTimeout(OpenWebUIError):
     """A request or agent run exceeded its deadline."""
 
     key = "timeout"
+    still_running = False
+
+
+class TurnStillRunning(CompletionTimeout):
+    """Gateway: the deadline passed after the turn was accepted; it may still act."""
+
+    key = "still_running"
+    still_running = True
 
 
 class ModelMissingError(OpenWebUIError):
@@ -106,3 +119,67 @@ class UnexecutedToolCall(AgentFailedError):
     """The final answer contains an unexecuted tool protocol."""
 
     key = "unexecuted_tool"
+
+
+# Gateway mode. Upstream (Open WebUI) failures reported by the gateway reuse the
+# keys above; these describe the gateway itself or the request sent to it.
+
+
+class GatewayUnreachable(OpenWebUIError):
+    """The gateway could not be reached; nothing was submitted."""
+
+    key = "gateway_unreachable"
+
+
+class NotGatewayError(ProtocolError):
+    """The URL answered, but not like the gateway's assistant API."""
+
+    key = "not_gateway"
+
+
+class GatewayUnauthorized(AuthenticationError):
+    """The gateway rejected this entry's API client token."""
+
+    key = "gateway_unauthorized"
+
+
+class GatewayForbidden(PermissionDenied):
+    """The API client token lacks the scope for this request."""
+
+    key = "gateway_forbidden"
+
+
+class InvalidRequestError(OpenWebUIError):
+    """The gateway rejected the request body."""
+
+    key = "invalid_request"
+
+
+class NonSpeechError(OpenWebUIError):
+    """The gateway found no speech in the transcript."""
+
+    key = "non_speech"
+
+
+class VoiceUnavailableError(OpenWebUIError):
+    """The gateway has no voice pipeline configured."""
+
+    key = "voice_unavailable"
+
+
+class ConversationBusyError(OpenWebUIError):
+    """The conversation is still answering a previous request."""
+
+    key = "conversation_busy"
+
+
+class GatewayConfigurationError(OpenWebUIError):
+    """The gateway is not configured for this client (profile, user key)."""
+
+    key = "gateway_configuration"
+
+
+class GatewayError(OpenWebUIError):
+    """An internal or otherwise unrecognized gateway failure."""
+
+    key = "gateway_error"

@@ -3,13 +3,20 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connect to Open WebUI",
+        "title": "Connect Open WebUI Agent",
+        "description": "Choose Open WebUI to connect directly, or AI gateway to use the home AI gateway. For the gateway, enter its URL and an API client token from the gateway admin API clients screen.",
         "data": {
+          "backend": "Connection",
           "service_name": "Instance name",
-          "base_url": "Open WebUI URL",
-          "api_key": "API key",
+          "base_url": "Open WebUI or gateway URL",
+          "api_key": "API key or gateway token",
           "verify_ssl": "Verify SSL",
           "timeout": "API request timeout (seconds)"
+        },
+        "data_description": {
+          "backend": "AI gateway: the gateway chooses the model, tools, memory, thinking, chat history and who is speaking.",
+          "base_url": "Open WebUI: its base URL. AI gateway: the gateway URL, not the Open WebUI URL.",
+          "api_key": "Open WebUI: an API key. AI gateway: the token shown once when you create an API client."
         }
       },
       "agent": {
@@ -51,6 +58,20 @@
           "terminal_mode": "Terminal mode",
           "terminal_id": "Terminal"
         }
+      },
+      "gateway": {
+        "title": "AI gateway",
+        "description": "Gateway status: {status}. The gateway decides the model, tools, memory, thinking, chat history and who is speaking. These settings only change how Home Assistant waits and listens.",
+        "data": {
+          "completion_timeout": "Answer timeout (seconds)",
+          "conversation_mode": "Continue listening",
+          "strip_markdown": "Strip Markdown"
+        },
+        "data_description": {
+          "completion_timeout": "How long Home Assistant waits for an answer. The gateway's profile can only shorten it. If it passes after the gateway accepted the request, you hear that it is still working.",
+          "conversation_mode": "Questions continues when the reply ends in a question. Say \"let's talk\" to keep the current session listening, or \"end conversation\" to stop. Always continues after every successful reply. Requires a compatible Assist satellite.",
+          "strip_markdown": "Clean the text shown in the Assist chat. Speech always uses the gateway's speech text."
+        }
       }
     },
     "error": {
@@ -68,7 +89,12 @@
       "invalid_url": "Enter an HTTP or HTTPS base URL without credentials, query parameters or a fragment.",
       "no_models": "No models are visible to this API key. Check model visibility and user permissions in Open WebUI.",
       "discovery_partial": "Some resources are unavailable or need OAuth authorization. Saved IDs are preserved. Check permissions in Open WebUI; terminal discovery is optional when no terminal is used.",
-      "terminal_required": "Choose an available terminal, or select None / Use model default terminal."
+      "terminal_required": "Choose an available terminal, or select None / Use model default terminal.",
+      "gateway_unreachable": "Cannot connect to the AI gateway. Check the URL, port and network.",
+      "gateway_unauthorized": "The AI gateway rejected the token. Create or copy a current token in the gateway admin API clients screen.",
+      "gateway_forbidden": "The gateway token lacks permission. Check its scopes in the gateway admin.",
+      "not_gateway": "This URL did not answer like the AI gateway. Enter the gateway URL and port, not the Open WebUI URL.",
+      "gateway_error": "The AI gateway reported an internal error. Check the gateway logs."
     },
     "abort": {
       "already_configured": "An instance with this name is already configured.",
@@ -116,6 +142,22 @@
           "terminal_mode": "Terminal mode",
           "terminal_id": "Terminal"
         }
+      },
+      "gateway": {
+        "title": "AI gateway",
+        "description": "Gateway status: {status}. The gateway decides the model, tools, memory, thinking, chat history and who is speaking. These settings only change how Home Assistant waits and listens.",
+        "data": {
+          "verify_ssl": "Verify SSL",
+          "timeout": "API request timeout (seconds)",
+          "completion_timeout": "Answer timeout (seconds)",
+          "conversation_mode": "Continue listening",
+          "strip_markdown": "Strip Markdown"
+        },
+        "data_description": {
+          "completion_timeout": "How long Home Assistant waits for an answer. The gateway's profile can only shorten it. If it passes after the gateway accepted the request, you hear that it is still working.",
+          "conversation_mode": "Questions continues when the reply ends in a question. Say \"let's talk\" to keep the current session listening, or \"end conversation\" to stop. Always continues after every successful reply. Requires a compatible Assist satellite.",
+          "strip_markdown": "Clean the text shown in the Assist chat. Speech always uses the gateway's speech text."
+        }
       }
     },
     "error": {
@@ -133,7 +175,12 @@
       "invalid_url": "Enter an HTTP or HTTPS base URL without credentials, query parameters or a fragment.",
       "no_models": "No models are visible to this API key. Check model visibility and user permissions in Open WebUI.",
       "discovery_partial": "Some resources are unavailable or need OAuth authorization. Saved IDs are preserved. Check permissions in Open WebUI; terminal discovery is optional when no terminal is used.",
-      "terminal_required": "Choose an available terminal, or select None / Use model default terminal."
+      "terminal_required": "Choose an available terminal, or select None / Use model default terminal.",
+      "gateway_unreachable": "Cannot connect to the AI gateway. Check the URL, port and network.",
+      "gateway_unauthorized": "The AI gateway rejected the token. Create or copy a current token in the gateway admin API clients screen.",
+      "gateway_forbidden": "The gateway token lacks permission. Check its scopes in the gateway admin.",
+      "not_gateway": "This URL did not answer like the AI gateway. Enter the gateway URL and port, not the Open WebUI URL.",
+      "gateway_error": "The AI gateway reported an internal error. Check the gateway logs."
     }
   },
   "selector": {
@@ -160,6 +207,12 @@
       "options": {
         "questions": "Questions or \"let's talk\"",
         "always": "Always continue"
+      }
+    },
+    "backend": {
+      "options": {
+        "openwebui": "Open WebUI (direct)",
+        "gateway": "AI gateway"
       }
     }
   },
@@ -223,6 +276,39 @@
     },
     "terminal_disabled": {
       "message": "The selected Open WebUI model disables terminal access. Set Terminal to None or enable the model's terminal capability in Open WebUI."
+    },
+    "still_running": {
+      "message": "I'm still working on that. It may still finish, so please don't repeat it."
+    },
+    "gateway_unreachable": {
+      "message": "I can't reach the assistant gateway right now."
+    },
+    "not_gateway": {
+      "message": "The assistant gateway address is wrong. Check the gateway URL."
+    },
+    "gateway_unauthorized": {
+      "message": "The assistant gateway rejected this Home Assistant token."
+    },
+    "gateway_forbidden": {
+      "message": "This Home Assistant token is not allowed to do that."
+    },
+    "invalid_request": {
+      "message": "The assistant gateway could not accept that request."
+    },
+    "non_speech": {
+      "message": "I didn't catch any speech."
+    },
+    "voice_unavailable": {
+      "message": "Voice processing is not available on the assistant gateway."
+    },
+    "conversation_busy": {
+      "message": "That conversation is still answering a previous request."
+    },
+    "gateway_configuration": {
+      "message": "The assistant gateway is not set up for this device yet."
+    },
+    "gateway_error": {
+      "message": "Something went wrong in the assistant gateway."
     }
   }
 }
