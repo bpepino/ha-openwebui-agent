@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.1.0 — unreleased
+
+Follows the gateway's Phase 4. Gateway entries only.
+
+- **Degraded answers from the gateway.** When the gateway's degraded mode is on and its assistant upstream is offline, it answers with "Assistant offline, basic commands only." and Home Assistant's own agent, marked `degraded: true`. Home Assistant speaks it as usual, never keeps listening after it and never retries it.
+- **Fallback while the gateway is unreachable** (new option, off by default): on a connection or DNS failure or a 5xx from a proxy, but never on a `4xx` or a `504 still_running`, Home Assistant's own agent (`conversation.home_assistant`) answers the same text, conversation, language and satellite, after the translated "Assistant offline, basic commands only." With the option off, the gateway's unreachable message is spoken as before.
+- Both degraded answers are shown the same way: a `degraded` attribute on the conversation entity, an `openwebui_agent_degraded` event (`source`, `device_id`, `satellite_id`) and diagnostics.
+- **Health.** The test step and diagnostics read `open_mode` from `GET /health` and say whether a token is needed; diagnostics also show the gateway's degraded mode (`enabled`, `offline`). Gateways that do not report `open_mode` are probed as before.
+- The turn follow-up (`GET /assistant/v1/turns/{turn_id}`) and the household event push are unchanged. Newer gateways also derive the same events themselves with the same IDs and drop duplicates.
+- Direct Open WebUI mode is still available and deprecated; its notices no longer name 3.1 as the removal version.
+
+Validation: 263 tests passed on Linux with Python 3.14 and Home Assistant 2026.6.0 (`pytest-homeassistant-custom-component` 0.13.336): 209 portable tests and 54 Home Assistant fixture tests with respx simulating the gateway (a degraded gateway answer with its attribute, event and diagnostics; the fallback on a connection failure and a proxy 502, where Home Assistant's agent really answered a built-in intent; no fallback with the option off, on a 401, a 504 `still_running` or a gateway error envelope; `open_mode` read from health). The portable tests also passed on Windows with Python 3.12. Ruff lint and format passed. Not run: hassfest, HACS validation, and any test against a live gateway.
+
 ## 3.0.1 — unreleased
 
 Fixes after an independent review of 3.0.0. Gateway entries only.

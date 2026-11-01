@@ -10,6 +10,7 @@ from .const import (
     BACKEND_GATEWAY,
     BACKEND_OPENWEBUI,
     CONF_EVENTS_TOKEN,
+    CONF_FALLBACK,
     CONF_GENERIC_STATE_CHANGES,
     CONF_LANGUAGE,
     CONF_PRESENCE,
@@ -31,6 +32,7 @@ async def _async_gateway_diagnostics(hass: HomeAssistant, entry: ConfigEntry) ->
     options = {**GATEWAY_DEFAULT_OPTIONS, **entry.options}
     try:
         gateway = asdict(await client.async_check())
+        gateway["token_needed"] = not gateway["open_mode"]
     except OpenWebUIError as err:
         gateway = {"error": err.key}
     pusher = hass.data.get(DATA_PUSHERS, {}).get(entry.entry_id)
@@ -55,6 +57,11 @@ async def _async_gateway_diagnostics(hass: HomeAssistant, entry: ConfigEntry) ->
             "door_open_after_s": push.door_open_after_s,
             "unavailable_after_s": push.unavailable_after_s,
             "generic_state_changes": options[CONF_GENERIC_STATE_CHANGES],
+        },
+        "degraded_answers": {
+            "fallback_to_home_assistant": options[CONF_FALLBACK],
+            "last_answer": client.last_degraded,
+            "count": client.degraded_answers,
         },
         "mapped_conversation_count": len(client.conversations),
         "last_identity_confidence": client.last_confidence,

@@ -1,6 +1,6 @@
 # Direct Open WebUI mode (deprecated)
 
-> **Deprecated in 3.0.0, removed in 3.1.** Use the [AI gateway](../README.md) instead: it serves the conversation agent, speech-to-text and text-to-speech, and runs the same Open WebUI agent protocol centrally. Existing direct entries keep working in 3.0.0 and show a repair notice in Home Assistant. New direct entries are still possible through **Add integration → Open WebUI Agent → Open WebUI directly (deprecated)**.
+> **Deprecated in 3.0.0, to be removed in a future release.** Use the [AI gateway](../README.md) instead: it serves the conversation agent, speech-to-text and text-to-speech, and runs the same Open WebUI agent protocol centrally. Existing direct entries keep working and show a repair notice in Home Assistant. New direct entries are still possible through **Add integration → Open WebUI Agent → Open WebUI directly (deprecated)**.
 
 This page keeps the 2.x documentation of the direct mode, where Home Assistant talks to Open WebUI itself. **Home Assistant is the frontend. Open WebUI is the agent.** Assist text goes to a real Open WebUI chat, and the integration waits for Open WebUI to finish its native server-side agent loop. Open WebUI chooses tools, executes them, processes their results, and produces the final response for Assist/TTS. Direct mode provides only the conversation agent; it has no speech-to-text or text-to-speech entities.
 

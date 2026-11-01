@@ -7,7 +7,7 @@
         "description": "Home Assistant talks only to the AI gateway: it provides the conversation agent, speech-to-text and text-to-speech. Nothing else is needed in Home Assistant.",
         "menu_options": {
           "gateway": "AI gateway (recommended)",
-          "openwebui": "Open WebUI directly (deprecated, removed in 3.1)"
+          "openwebui": "Open WebUI directly (deprecated)"
         }
       },
       "gateway": {
@@ -51,7 +51,7 @@
       },
       "openwebui": {
         "title": "Connect Open WebUI directly (deprecated)",
-        "description": "Deprecated: direct Open WebUI mode will be removed in 3.1. Use the AI gateway instead. Enter the Open WebUI URL and an API key.",
+        "description": "Deprecated: direct Open WebUI mode will be removed in a future release. Use the AI gateway instead. Enter the Open WebUI URL and an API key.",
         "data": {
           "service_name": "Instance name",
           "base_url": "Open WebUI URL",
@@ -139,12 +139,14 @@
         "data": {
           "completion_timeout": "Turn timeout (seconds)",
           "tts_voice": "Voice",
-          "tts_format": "Audio format"
+          "tts_format": "Audio format",
+          "fallback_to_home_assistant": "Fall back to Home Assistant when the gateway is unreachable"
         },
         "data_description": {
           "completion_timeout": "How long Home Assistant waits for an answer. The gateway's profile can only shorten it. If it passes after the gateway accepted the request, Home Assistant asks for the answer every 2 seconds for up to this long again, then says it is still working.",
           "tts_voice": "Leave empty for the gateway's speech profile voice.",
-          "tts_format": "The audio container the gateway returns. Home Assistant converts it for your satellites when needed."
+          "tts_format": "The audio container the gateway returns. Home Assistant converts it for your satellites when needed.",
+          "fallback_to_home_assistant": "Off by default. When the gateway cannot be reached, Home Assistant's own Assist agent answers basic commands, after \"Assistant offline, basic commands only.\" It runs them itself, outside the gateway's action policy, so turn this on only if that is wanted."
         },
         "sections": {
           "household": {
@@ -283,7 +285,7 @@
   "issues": {
     "direct_mode_deprecated": {
       "title": "Direct Open WebUI mode is deprecated",
-      "description": "{title} talks to Open WebUI directly. This mode will be removed in version 3.1. Add the AI gateway (Settings → Devices & services → Add integration → Open WebUI Agent → AI gateway), select it in your Assist pipeline, then delete {title}."
+      "description": "{title} talks to Open WebUI directly. This mode will be removed in a future release. Add the AI gateway (Settings → Devices & services → Add integration → Open WebUI Agent → AI gateway), select it in your Assist pipeline, then delete {title}."
     }
   },
   "exceptions": {
@@ -382,6 +384,9 @@
     },
     "token_required": {
       "message": "The assistant gateway needs a token for Home Assistant."
+    },
+    "gateway_offline": {
+      "message": "Assistant offline, basic commands only."
     }
   }
 }

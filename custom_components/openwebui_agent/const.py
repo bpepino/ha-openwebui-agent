@@ -5,7 +5,7 @@ from logging import getLogger
 LOGGER = getLogger(__package__)
 DOMAIN = "openwebui_agent"
 NAME = "Open WebUI Agent"
-VERSION = "3.0.1"
+VERSION = "3.1.0"
 CONF_SERVICE_NAME = "service_name"
 CONF_BASE_URL = "base_url"
 CONF_API_KEY = "api_key"
@@ -31,6 +31,13 @@ CONF_GATEWAY_TOKEN = "gateway_token"
 CONF_LANGUAGE = "language"
 CONF_TTS_VOICE = "tts_voice"
 CONF_TTS_FORMAT = "tts_format"
+# Off by default: Home Assistant's own agent acts outside the gateway's policy.
+CONF_FALLBACK = "fallback_to_home_assistant"
+# A degraded answer: the gateway's own (assistant upstream offline), or Home
+# Assistant's agent while the gateway is unreachable.
+EVENT_DEGRADED = "openwebui_agent_degraded"
+DEGRADED_GATEWAY = "gateway"
+DEGRADED_HOME_ASSISTANT = "home_assistant"
 # Text-to-speech containers the gateway produces, and HA's file extension for each.
 TTS_FORMATS = {"mp3": "mp3", "wav": "wav", "opus": "ogg"}
 GATEWAY_TITLE = "AI gateway"
@@ -75,12 +82,14 @@ GATEWAY_OPTIONS = (
     CONF_COMPLETION_TIMEOUT,
     CONF_TTS_VOICE,
     CONF_TTS_FORMAT,
+    CONF_FALLBACK,
     *HOUSEHOLD_OPTIONS,
 )
 GATEWAY_DEFAULT_OPTIONS = {
     CONF_COMPLETION_TIMEOUT: 120,
     CONF_TTS_VOICE: "",
     CONF_TTS_FORMAT: "mp3",
+    CONF_FALLBACK: False,
     CONF_EVENTS: True,
     # Empty: every person exposed to Assist.
     CONF_PRESENCE: [],

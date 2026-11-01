@@ -1,4 +1,11 @@
-"""Thin Assist adapter; Open WebUI or the gateway owns context and tools."""
+"""Thin Assist adapter; Open WebUI or the gateway owns context and tools.
+
+Gateway mode also shows degraded answers: the gateway's own (its assistant
+upstream is offline and Home Assistant's agent answered there), and, when the
+owner opts in, Home Assistant's agent answering here while the gateway is
+unreachable. Both end listening and are exposed as the entity's ``degraded``
+attribute, an ``openwebui_agent_degraded`` event and in diagnostics.
+"""
 
 from typing import Literal
 
@@ -6,7 +13,7 @@ from homeassistant.components import conversation
 from homeassistant.components.conversation.chat_log import AssistantContent, ChatLog
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import MATCH_ALL
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import (
     area_registry as ar,
     device_registry as dr,
@@ -21,15 +28,25 @@ from mdit_plain.renderer import RendererPlain
 
 from .const import (
     BACKEND_GATEWAY,
+    CONF_FALLBACK,
     CONF_LANGUAGE,
     DEFAULT_OPTIONS,
+    DEGRADED_GATEWAY,
+    DEGRADED_HOME_ASSISTANT,
     DOMAIN,
+    EVENT_DEGRADED,
     GATEWAY_DEFAULT_OPTIONS,
     LOGGER,
     entry_backend,
 )
 from .exceptions import OpenWebUIError
 from .gateway import gateway_device_info
+
+# Spoken before Home Assistant's answer while the gateway is unreachable; the
+# translation key ``gateway_offline`` localizes it.
+OFFLINE_KEY = "gateway_offline"
+OFFLINE_EN = "Assistant offline, basic commands only."
+ATTR_DEGRADED = "degraded"
 
 
 async def async_setup_entry(
@@ -52,10 +69,13 @@ class OpenWebUIAgent(conversation.ConversationEntity):
         self.manager = hass.data[DOMAIN][entry.entry_id]
         self._gateway = entry_backend(entry.data) == BACKEND_GATEWAY
         self._attr_unique_id = entry.entry_id
+        self._fallback = False
         if self._gateway:
             # Named after the device it shares with speech-to-text and text-to-speech.
             self._attr_name = None
             self._attr_device_info = gateway_device_info(entry, self.manager)
+            self._attr_extra_state_attributes = {ATTR_DEGRADED: False}
+            self._fallback = {**GATEWAY_DEFAULT_OPTIONS, **entry.options}[CONF_FALLBACK]
         else:
             self._attr_name = entry.title
         self._markdown = MarkdownIt(renderer_cls=RendererPlain)
@@ -131,18 +151,90 @@ class OpenWebUIAgent(conversation.ConversationEntity):
             timeout_s=options["completion_timeout"],
         )
 
-    async def _async_error_message(self, language: str, err: OpenWebUIError) -> str:
-        """Translate the error key, falling back to English, then the gateway text."""
-        key = f"component.{DOMAIN}.exceptions.{err.key}.message"
+    async def _async_message(
+        self, language: str, key: str, placeholders: dict | None = None
+    ) -> str | None:
+        """Translate an ``exceptions`` key, falling back to English."""
+        key = f"component.{DOMAIN}.exceptions.{key}.message"
         for lang in dict.fromkeys((language, "en")):
             translations = await translation.async_get_translations(
                 self.hass, lang, "exceptions", {DOMAIN}
             )
             if key in translations:
-                return translations[key].format(
-                    **getattr(err, "translation_placeholders", {})
-                )
-        return err.server_message or f"Open WebUI Agent failed ({err.key})."
+                return translations[key].format(**(placeholders or {}))
+        return None
+
+    async def _async_error_message(self, language: str, err: OpenWebUIError) -> str:
+        """Translate the error key, falling back to English, then the gateway text."""
+        message = await self._async_message(
+            language, err.key, getattr(err, "translation_placeholders", {})
+        )
+        return message or err.server_message or f"Open WebUI Agent failed ({err.key})."
+
+    @callback
+    def _async_record_degraded(
+        self, source: str | None, user_input: conversation.ConversationInput
+    ) -> None:
+        """Expose whether this answer was degraded, and fire an event when it was."""
+        self.manager.last_degraded = source
+        self._attr_extra_state_attributes = {ATTR_DEGRADED: source is not None}
+        self.async_write_ha_state()
+        if source is None:
+            return
+        self.manager.degraded_answers += 1
+        self.hass.bus.async_fire(
+            EVENT_DEGRADED,
+            {
+                "entity_id": self.entity_id,
+                "source": source,
+                "device_id": user_input.device_id,
+                "satellite_id": getattr(user_input, "satellite_id", None),
+            },
+            context=user_input.context,
+        )
+
+    async def _async_fallback(
+        self,
+        user_input: conversation.ConversationInput,
+        chat_log: ChatLog,
+        err: OpenWebUIError,
+    ) -> conversation.ConversationResult:
+        """Let Home Assistant's own agent answer while the gateway is unreachable."""
+        LOGGER.warning(
+            "AI gateway unreachable (%s); Home Assistant's agent answers", err.key
+        )
+        try:
+            result = await conversation.async_converse(
+                self.hass,
+                user_input.text,
+                chat_log.conversation_id,
+                user_input.context,
+                language=user_input.language,
+                agent_id=conversation.HOME_ASSISTANT_AGENT,
+                device_id=user_input.device_id,
+                satellite_id=getattr(user_input, "satellite_id", None),
+            )
+        except Exception:  # noqa: BLE001 - report the gateway failure instead
+            LOGGER.exception("Home Assistant's agent failed as the fallback")
+            response = intent.IntentResponse(language=user_input.language)
+            response.async_set_error(
+                intent.IntentResponseErrorCode.UNKNOWN,
+                await self._async_error_message(user_input.language, err),
+            )
+            self._async_record_degraded(None, user_input)
+            return conversation.ConversationResult(
+                response=response, conversation_id=chat_log.conversation_id
+            )
+        response = result.response
+        speech = response.speech.get("plain", {}).get("speech", "")
+        prefix = await self._async_message(user_input.language, OFFLINE_KEY)
+        response.async_set_speech(f"{prefix or OFFLINE_EN} {speech}".strip())
+        self._async_record_degraded(DEGRADED_HOME_ASSISTANT, user_input)
+        return conversation.ConversationResult(
+            response=response,
+            conversation_id=chat_log.conversation_id,
+            continue_conversation=False,
+        )
 
     async def _async_handle_message(
         self, user_input: conversation.ConversationInput, chat_log: ChatLog
@@ -151,17 +243,22 @@ class OpenWebUIAgent(conversation.ConversationEntity):
         response = intent.IntentResponse(language=user_input.language)
         continue_conversation = False
         expects_reply = False
+        degraded = False
         try:
             if self._gateway:
                 result = await self._async_gateway_turn(user_input, chat_log)
                 text, speech = result.display_text, result.speech_text
                 expects_reply = result.expects_reply
+                # Home Assistant's agent answered at the gateway: never retried.
+                degraded = result.degraded
             else:
                 result = await self.manager.async_process(
                     chat_log.conversation_id, user_input.text, dict(self.entry.options)
                 )
                 text = speech = result.text
         except OpenWebUIError as err:
+            if self._gateway and self._fallback and err.unreachable:
+                return await self._async_fallback(user_input, chat_log, err)
             LOGGER.warning("Open WebUI agent failed: %s", err.key)
             response.async_set_error(
                 intent.IntentResponseErrorCode.UNKNOWN,
@@ -178,8 +275,14 @@ class OpenWebUIAgent(conversation.ConversationEntity):
                 AssistantContent(agent_id=self.entity_id, content=text)
             )
             response.async_set_speech(speech)
-            continue_conversation = self._continue_conversation(
-                user_input, chat_log, expects_reply
+            # A degraded answer ends listening: basic commands only.
+            continue_conversation = (
+                self._continue_conversation(user_input, chat_log, expects_reply)
+                and not degraded
+            )
+        if self._gateway:
+            self._async_record_degraded(
+                DEGRADED_GATEWAY if degraded else None, user_input
             )
         return conversation.ConversationResult(
             response=response,

@@ -168,7 +168,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass, cleaner.async_cleanup(), "openwebui_chat_cleanup"
         )
     LOGGER.warning(
-        "Direct Open WebUI mode is deprecated and will be removed in 3.1; "
+        "Direct Open WebUI mode is deprecated and will be removed in a future release; "
         "add the AI gateway instead"
     )
     LOGGER.debug("Open WebUI Agent %s initialized", VERSION)

@@ -418,6 +418,51 @@ async def test_polling_not_possible_is_still_running(
     assert [r["path"] for r in gateway.requests].count("/assistant/v1/turns") == 1
 
 
+async def test_degraded_answer(client, gateway):
+    """The gateway's degraded flag is kept; a normal answer has none."""
+    result = await client.async_turn("Hi", conversation_id="c-1")
+    assert result.degraded is False
+    gateway.turn_reply = (
+        200,
+        {
+            **REPLY,
+            "speech_text": "Assistant offline, basic commands only. Turned on the light.",
+            "degraded": True,
+        },
+    )
+    result = await client.async_turn("Turn on the light", conversation_id="c-1")
+    assert result.degraded is True
+    assert result.speech_text.startswith("Assistant offline")
+    assert sum(r["path"] == "/assistant/v1/turns" for r in gateway.requests) == 2
+
+
+@pytest.mark.parametrize(
+    ("reply", "unreachable"),
+    [
+        (None, True),  # connection refused or DNS failure
+        ((502, "<html>Bad Gateway</html>"), True),  # a proxy
+        ((503, "Service Unavailable"), True),
+        ((500, "Internal Server Error"), True),
+        ((502, {"error": {"code": "cannot_connect", "message": "x"}}), False),
+        ((500, {"error": {"code": "internal_error", "message": "x"}}), False),
+        ((503, {"error": {"code": "brand_new_code", "message": "x"}}), False),
+        ((401, UNAUTHORIZED), False),
+        ((404, "<html>Not Found</html>"), False),
+        ((504, "<html>Gateway Timeout</html>"), False),  # may still act
+        ((504, {"error": {"code": "timeout", "still_running": True}}), False),
+    ],
+)
+async def test_unreachable_is_marked(client, gateway, reply, unreachable):
+    """Only a gateway that cannot be reached is marked unreachable (fallback)."""
+    if reply is None:
+        gateway.down = True
+    else:
+        gateway.turn_reply = reply
+    with pytest.raises(OpenWebUIError) as caught:
+        await client.async_turn("Hi", conversation_id="c-1")
+    assert caught.value.unreachable is unreachable
+
+
 async def test_conversation_mapping_and_new_chat(client, gateway):
     """HA's ID maps to the gateway's; new_chat replaces the mapping."""
     gateway.turn_reply = (
@@ -632,7 +677,8 @@ async def test_check_in_open_mode(client, gateway):
         status="degraded", version="18.0.0", degraded=["tts"], open_mode=True
     )
     assert client.last_status == status
-    health, probe, token_probe = gateway.requests
+    # A gateway whose health does not say whether it runs in open mode is probed.
+    health, token_probe, probe = gateway.requests
     assert health["path"] == "/health"
     assert (
         probe["path"]
@@ -643,6 +689,44 @@ async def test_check_in_open_mode(client, gateway):
     assert "Authorization" not in probe["headers"]
     # A configured token is checked in open mode too (its scope may be missing).
     assert token_probe["headers"]["Authorization"] == f"Bearer {TOKEN}"
+
+
+@pytest.mark.parametrize(
+    ("open_mode", "token", "probes", "error"),
+    [
+        (True, TOKEN, [TOKEN], None),
+        (True, "", [None], None),
+        (False, TOKEN, [TOKEN], None),
+        (False, "", [None], TokenRequired),
+    ],
+)
+async def test_check_reads_open_mode_from_health(
+    gateway, http, open_mode, token, probes, error
+):
+    """Health says whether a token is needed; one probe checks the access."""
+    gateway.require_tokens = not open_mode
+    gateway.health_reply = (
+        200,
+        {
+            **HEALTH,
+            "open_mode": open_mode,
+            "degraded_mode": {"enabled": True, "offline": False, "reason": "x"},
+        },
+    )
+    client = GatewayClient(gateway.url, token, http)
+    if error:
+        with pytest.raises(error):
+            await client.async_check()
+    else:
+        status = await client.async_check()
+        assert status.open_mode is open_mode
+        # Only the allowlisted degraded-mode fields are kept.
+        assert status.degraded_mode == {"enabled": True, "offline": False}
+    sent = [
+        r["headers"].get("Authorization", "").removeprefix("Bearer ") or None
+        for r in gateway.requests[1:]
+    ]
+    assert sent == probes
 
 
 async def test_check_in_open_mode_without_token(gateway, http):
@@ -665,7 +749,7 @@ async def test_check_with_required_tokens(client, gateway):
     gateway.require_tokens = True
     status = await client.async_check()
     assert status.open_mode is False
-    assert gateway.requests[-1]["headers"]["Authorization"] == f"Bearer {TOKEN}"
+    assert gateway.requests[1]["headers"]["Authorization"] == f"Bearer {TOKEN}"
 
 
 async def test_check_rejects_missing_and_wrong_tokens(gateway, http):

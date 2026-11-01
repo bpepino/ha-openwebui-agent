@@ -10,6 +10,10 @@ class OpenWebUIError(Exception):
     # conversation the failure belongs to.
     server_message: str | None = None
     conversation_id: str | None = None
+    # Gateway mode: the gateway itself could not be reached (a connection or DNS
+    # failure, or a 5xx without the gateway's error envelope, from a proxy).
+    # Never set for a 4xx or a 504 still_running: that turn may still act.
+    unreachable: bool = False
 
 
 class AuthenticationError(OpenWebUIError):

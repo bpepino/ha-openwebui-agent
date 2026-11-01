@@ -1,8 +1,8 @@
 # Manual acceptance tests
 
-## Gateway mode (3.0.1)
+## Gateway mode (3.1.0)
 
-These need a running AI gateway on your LAN and an Assist satellite (or the Assist dialog with a microphone). They have not been run against a live gateway as part of the 3.0.x changes; the automated tests simulate the gateway at the HTTP layer. Record the integration, Home Assistant and gateway versions with your results.
+These need a running AI gateway on your LAN and an Assist satellite (or the Assist dialog with a microphone). They have not been run against a live gateway as part of the 3.x changes; the automated tests simulate the gateway at the HTTP layer. Record the integration, Home Assistant and gateway versions with your results.
 
 1. **Open mode setup.** Add the integration, choose **AI gateway**, enter the gateway URL and leave the token empty. The test step must show the version the gateway dashboard shows, and "open mode". Submit: one **AI gateway** device appears with a conversation, a speech-to-text and a text-to-speech entity.
 2. **Tokens required.** Turn on **Require tokens** in the gateway and reload the entry. Home Assistant must ask for a token. A wrong token stays on the form with an error; the token of an API client of kind `ha` is accepted and the entry loads. Turn the setting off again if you use open mode.
@@ -16,6 +16,9 @@ These need a running AI gateway on your LAN and an Assist satellite (or the Assi
 10. **Token scope.** Give the entry the token of a client without the `assistant:turns` scope. Reloading must ask for a token (reauthentication), not retry forever.
 11. **Exposed entities.** Expose a light in an area and leave a switch unexposed. `curl -H "Authorization: Bearer <HA token>" "http://<home-assistant>:8123/api/oikos?area=1&caps=1&assistant=conversation"` must list the light with its area name and not the switch. The gateway's household page must show the same entities.
 12. **Household events.** Let a person tracked under **Configure → Household events** come home: the gateway's event log must show one `person_arrived_home` whose `event_id` starts with `ha-person_arrived_home-`. Leave an exposed door open longer than the configured time: one `door_open_long`. In open mode the request carries no `Authorization` header; with **Require tokens** on, events need an `events` token, and without one diagnostics count them as failed with HTTP 401.
+13. **Open mode from health.** With a gateway that reports `open_mode` in `GET /health`, the test step must say "open mode" or "tokens required" accordingly, and diagnostics must show `token_needed`.
+14. **Degraded answer at the gateway.** Turn on the gateway's degraded mode and stop its Open WebUI. Ask a satellite "turn on the office light": you must hear "Assistant offline, basic commands only." and the light must change; the satellite must not keep listening. The conversation entity's `degraded` attribute must be `true`, an `openwebui_agent_degraded` event with `source: gateway` must appear (Developer tools → Events), and diagnostics must count one degraded answer. The next normal answer sets the attribute back to `false`.
+15. **Fallback here.** Stop the gateway. With **Fall back to Home Assistant when the gateway is unreachable** off you hear "I can't reach the assistant gateway right now." Turn it on and ask again: you must hear "Assistant offline, basic commands only." followed by Home Assistant's own answer, and an event with `source: home_assistant`. A wrong token (401) or a slow turn (still working) must never fall back.
 
 ## Direct Open WebUI mode (deprecated)
 

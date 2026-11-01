@@ -26,6 +26,7 @@ from .const import (
     CONF_DOOR_OPEN_AFTER,
     CONF_EVENTS,
     CONF_EVENTS_TOKEN,
+    CONF_FALLBACK,
     CONF_GATEWAY_TOKEN,
     CONF_GATEWAY_URL,
     CONF_GENERIC_STATE_CHANGES,
@@ -159,7 +160,7 @@ def household_schema(values: dict) -> vol.Schema:
 
 
 def gateway_options_schema(values: dict) -> vol.Schema:
-    """Gateway options: the wait, the spoken voice, and the household events."""
+    """Gateway options: the wait, the voice, the fallback and the household events."""
     return vol.Schema(
         {
             vol.Required(
@@ -172,6 +173,7 @@ def gateway_options_schema(values: dict) -> vol.Schema:
             vol.Required(CONF_TTS_FORMAT, default=values[CONF_TTS_FORMAT]): select(
                 list(TTS_FORMATS), translation_key="tts_format"
             ),
+            vol.Required(CONF_FALLBACK, default=values[CONF_FALLBACK]): bool,
             vol.Required(HOUSEHOLD_SECTION): section(
                 household_schema(values), {"collapsed": True}
             ),

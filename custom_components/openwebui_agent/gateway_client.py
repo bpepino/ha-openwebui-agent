@@ -124,6 +124,8 @@ class TurnResult:
     expects_reply: bool
     conversation_id: str | None
     new_chat: bool = False
+    # The gateway answered in degraded mode: Home Assistant's own agent spoke.
+    degraded: bool = False
     confidence: str | None = None
     timings: dict[str, float] = field(default_factory=dict)
 
@@ -136,8 +138,11 @@ class GatewayStatus:
     version: str | None
     # Names of the gateway's failing checks when ``status`` is ``degraded``.
     degraded: list[str] = field(default_factory=list)
-    # Requests without a token are accepted (the gateway's default).
-    open_mode: bool = False
+    # Requests without a token are accepted (the gateway's default). Read from
+    # ``GET /health``; older gateways leave it out and are probed instead.
+    open_mode: bool | None = None
+    # The gateway's degraded mode: ``enabled`` by the owner, assistant ``offline``.
+    degraded_mode: dict[str, bool] | None = None
 
 
 def gateway_conversation_id(value: str | None) -> str | None:
@@ -203,6 +208,8 @@ def health_status(data: Any) -> GatewayStatus | None:
         return None
     version = data.get("version")
     checks = data.get("checks")
+    open_mode = data.get("open_mode")
+    mode = data.get("degraded_mode")
     return GatewayStatus(
         status=data["status"],
         version=version if isinstance(version, str) else None,
@@ -211,6 +218,14 @@ def health_status(data: Any) -> GatewayStatus | None:
             for name, check in (checks.items() if isinstance(checks, dict) else ())
             if isinstance(check, dict) and check.get("status") == "error"
         ),
+        open_mode=open_mode if isinstance(open_mode, bool) else None,
+        degraded_mode={
+            key: mode[key]
+            for key in ("enabled", "offline")
+            if isinstance(mode.get(key), bool)
+        }
+        if isinstance(mode, dict)
+        else None,
     )
 
 
@@ -266,9 +281,12 @@ def error_from_response(
     envelope = data.get("error") if isinstance(data, dict) else None
     if not isinstance(envelope, dict) or not isinstance(envelope.get("code"), str):
         LOGGER.debug("Gateway HTTP failure without error envelope: status=%s", status)
-        return _error_from_status(
+        err = _error_from_status(
             status, submitted=submitted, conversation_id=conversation_id
         )
+        # A 5xx without the envelope came from a proxy: the gateway is unreachable.
+        err.unreachable = status >= 500 and not isinstance(err, TurnStillRunning)
+        return err
     code = envelope["code"]
     cls = ERROR_CLASSES.get(code)
     if code == "timeout" and envelope.get("still_running") is True:
@@ -318,6 +336,7 @@ def _turn_result(data: dict[str, Any], sent_id: str | None) -> TurnResult:
         if isinstance(conversation_id, str) and conversation_id
         else sent_id,
         new_chat=data.get("new_chat") is True,
+        degraded=data.get("degraded") is True,
         confidence=confidence if isinstance(confidence, str) else None,
         timings={
             key: value
@@ -351,6 +370,10 @@ class GatewayClient:
         self.last_status: GatewayStatus | None = None
         self.last_timings: dict[str, float] | None = None
         self.last_confidence: str | None = None
+        # The source of the last answer when it was degraded ("gateway" or
+        # "home_assistant"), else None; and how many were (diagnostics).
+        self.last_degraded: str | None = None
+        self.degraded_answers = 0
         # HA conversation ID -> gateway conversation ID, most recent last.
         self.conversations: OrderedDict[str, str] = OrderedDict()
         self._tasks: set[asyncio.Task] = set()
@@ -393,7 +416,9 @@ class GatewayClient:
                     **kwargs,
                 )
         except (httpx.ConnectError, httpx.ConnectTimeout):
-            raise GatewayUnreachable("Gateway connection failed") from None
+            err = GatewayUnreachable("Gateway connection failed")
+            err.unreachable = True
+            raise err from None
         except (TimeoutError, httpx.HTTPError):
             if submitted:
                 # The turn left Home Assistant and may be running: never "retry".
@@ -435,18 +460,25 @@ class GatewayClient:
     async def async_check(self) -> GatewayStatus:
         """Health plus access: open mode, or a token the gateway accepts.
 
-        A configured token is always tried, also in open mode: a token without
-        the ``assistant:turns`` scope answers 403 (``GatewayForbidden``). A
-        missing token and a rejected one are reported separately; all three
-        start Home Assistant's reauthentication.
+        ``GET /health`` says whether the gateway runs in open mode; a gateway
+        that does not say is probed without a token. A configured token is
+        always tried, also in open mode: a token without the ``assistant:turns``
+        scope answers 403 (``GatewayForbidden``). A missing token and a rejected
+        one are reported separately; all three start Home Assistant's
+        reauthentication.
         """
         status = await self.async_health()
-        status.open_mode = await self._async_accepted(token=False)
         if self._token:
             if not await self._async_accepted(token=True):
                 raise GatewayUnauthorized("The gateway rejected the token")
-        elif not status.open_mode:
-            raise TokenRequired("The gateway requires a token")
+            if status.open_mode is None:
+                status.open_mode = await self._async_accepted(token=False)
+        else:
+            accepted = await self._async_accepted(token=False)
+            if status.open_mode is None:
+                status.open_mode = accepted
+            if not accepted:
+                raise TokenRequired("The gateway requires a token")
         self.last_status = status
         return status
 

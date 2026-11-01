@@ -2,8 +2,9 @@
 
 Gateway: the URL, an optional token and the language, then a test step that
 shows the gateway's version and whether it runs in open mode. Options: the turn
-timeout, the text-to-speech voice and format, and the household events pushed
-to the gateway. The gateway owns the model, tools, features, identity, chat
+timeout, the text-to-speech voice and format, the fallback to Home Assistant's
+own agent while the gateway is unreachable, and the household events pushed to
+the gateway. The gateway owns the model, tools, features, identity, chat
 history and the voice pipeline.
 
 Direct Open WebUI mode keeps its discovery and agent steps for one more release.

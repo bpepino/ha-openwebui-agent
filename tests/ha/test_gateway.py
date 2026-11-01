@@ -3,6 +3,7 @@
 import asyncio
 from datetime import timedelta
 import json
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -21,11 +22,13 @@ from homeassistant.helpers import (
     area_registry as ar,
     device_registry as dr,
     entity_registry as er,
+    intent,
     issue_registry as ir,
 )
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
+    async_capture_events,
     async_fire_time_changed,
 )
 
@@ -50,6 +53,7 @@ DEFAULT_OPTIONS = {
     "completion_timeout": 120,
     "tts_voice": "",
     "tts_format": "mp3",
+    "fallback_to_home_assistant": False,
     "events": True,
     "presence": [],
     "door_open_after": {"hours": 0, "minutes": 10, "seconds": 0},
@@ -92,6 +96,7 @@ STILL_RUNNING = {
     }
 }
 ACCEPTED = {"accepted": True, "event_id": "x", "reason": "reasoning_queued"}
+OFFLINE = "Assistant offline, basic commands only."
 
 
 class FakeGateway:
@@ -275,6 +280,25 @@ async def test_setup_flow_errors(hass, gateway, url, route, key):
     assert result["errors"] == {"base": key}
 
 
+@pytest.mark.parametrize("open_mode", [True, False])
+async def test_setup_flow_reads_open_mode_from_health(hass, gateway, open_mode):
+    """Health says whether a token is needed; one probe checks the access."""
+    gateway.require_tokens = not open_mode
+    gateway.health.respond(json={**HEALTH, "open_mode": open_mode})
+    result = await _start_gateway_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"gateway_url": URL, "language": "en"}
+    )
+    assert gateway.probe.call_count == 1
+    if open_mode:
+        assert result["step_id"] == "test"
+        assert result["description_placeholders"]["access"] == (
+            "open mode, no token needed on your network"
+        )
+    else:
+        assert result["errors"] == {"base": "token_required"}
+
+
 async def test_same_gateway_twice_aborts(hass, gateway):
     """One entry per gateway URL."""
     MockConfigEntry(domain=DOMAIN, data=DATA, options=OPTIONS).add_to_hass(hass)
@@ -294,6 +318,7 @@ async def test_options_flow(hass, gateway):
         "completion_timeout",
         "tts_voice",
         "tts_format",
+        "fallback_to_home_assistant",
         "household",
     }
     result = await hass.config_entries.options.async_configure(
@@ -318,6 +343,7 @@ async def test_options_flow(hass, gateway):
     assert entry.options["presence"] == ["person.alex"]
     assert entry.options["door_open_after"] == {"hours": 0, "minutes": 5, "seconds": 0}
     assert entry.options["gateway_events_token"] == EVENTS_TOKEN
+    assert entry.options["fallback_to_home_assistant"] is False
     assert "household" not in entry.options and "chat_model" not in entry.options
     # The reload after saving started a new event push; the view is not re-added.
     assert entry.state is config_entries.ConfigEntryState.LOADED
@@ -589,6 +615,151 @@ async def test_assist_turn_errors_are_spoken(hass, gateway):
     assert result.continue_conversation is False
     assert gateway.turns.call_count == 1
     assert not gateway.poll.called
+
+
+async def test_degraded_gateway_answer(hass, gateway):
+    """Spoken as usual, never listening on, exposed as attribute, event and diagnostics."""
+    entry = await _setup(hass)
+    agent_id = _entity_id(hass, "conversation", entry.entry_id)
+    assert hass.states.get(agent_id).attributes["degraded"] is False
+    degraded = async_capture_events(hass, "openwebui_agent_degraded")
+    gateway.turns.respond(
+        json={
+            **REPLY,
+            "speech_text": f"{OFFLINE} Turned on the light.",
+            "expects_reply": True,
+            "degraded": True,
+        }
+    )
+    result = await conversation.async_converse(
+        hass,
+        "Turn on the light",
+        None,
+        Context(),
+        language="en",
+        agent_id=agent_id,
+        device_id="satellite-device",
+    )
+    assert (
+        result.response.speech["plain"]["speech"] == f"{OFFLINE} Turned on the light."
+    )
+    assert result.continue_conversation is False
+    assert gateway.turns.call_count == 1  # never retried
+    assert hass.states.get(agent_id).attributes["degraded"] is True
+    assert [(e.data["source"], e.data["device_id"]) for e in degraded] == [
+        ("gateway", "satellite-device")
+    ]
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+    assert diagnostics["degraded_answers"] == {
+        "fallback_to_home_assistant": False,
+        "last_answer": "gateway",
+        "count": 1,
+    }
+    # The next normal answer clears the attribute.
+    gateway.turns.respond(json=REPLY)
+    await conversation.async_converse(
+        hass, "Thanks", None, Context(), language="en", agent_id=agent_id
+    )
+    assert hass.states.get(agent_id).attributes["degraded"] is False
+    assert len(degraded) == 1
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        httpx.ConnectError("refused"),
+        httpx.Response(502, text="<html>Bad Gateway</html>"),
+    ],
+)
+async def test_fallback_to_home_assistant(hass, gateway, failure):
+    """Unreachable gateway and the option on: Home Assistant's agent answers."""
+    entry = await _setup(hass, options={"fallback_to_home_assistant": True})
+    agent_id = _entity_id(hass, "conversation", entry.entry_id)
+    degraded = async_capture_events(hass, "openwebui_agent_degraded")
+    if isinstance(failure, Exception):
+        gateway.turns.side_effect = failure
+    else:
+        gateway.turns.return_value = failure
+    with patch(
+        "homeassistant.components.conversation.async_converse",
+        wraps=conversation.async_converse,
+    ) as converse:
+        result = await conversation.async_converse(
+            hass,
+            "What time is it?",
+            None,
+            Context(),
+            language="en",
+            agent_id=agent_id,
+            device_id="satellite-device",
+        )
+    speech = result.response.speech["plain"]["speech"]
+    assert speech.startswith(f"{OFFLINE} ") and len(speech) > len(OFFLINE) + 1
+    # A real intent ran (the current time), not an error.
+    assert result.response.response_type is intent.IntentResponseType.ACTION_DONE
+    assert result.continue_conversation is False
+    assert result.conversation_id
+    # The original turn is never retried; Home Assistant's agent got the same input.
+    assert gateway.turns.call_count == 1
+    inner = converse.call_args_list[1]
+    assert inner.args[1] == "What time is it?"
+    assert inner.args[2] == result.conversation_id
+    assert inner.kwargs["agent_id"] == "conversation.home_assistant"
+    assert inner.kwargs["device_id"] == "satellite-device"
+    assert inner.kwargs["language"] == "en"
+    assert hass.states.get(agent_id).attributes["degraded"] is True
+    assert [e.data["source"] for e in degraded] == ["home_assistant"]
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+    assert diagnostics["degraded_answers"]["last_answer"] == "home_assistant"
+
+
+@pytest.mark.parametrize(
+    ("fallback", "reply", "spoken"),
+    [
+        (False, httpx.ConnectError("refused"), "I can't reach the assistant gateway"),
+        (
+            True,
+            httpx.Response(401, json=UNAUTHORIZED),
+            "rejected this Home Assistant token",
+        ),
+        (
+            True,
+            httpx.Response(
+                504,
+                json={"error": {"code": "timeout", "still_running": True}},
+            ),
+            "still working",
+        ),
+        (
+            True,
+            httpx.Response(
+                502, json={"error": {"code": "cannot_connect", "message": "x"}}
+            ),
+            "Cannot connect to Open WebUI",
+        ),
+    ],
+)
+async def test_no_fallback(hass, gateway, fallback, reply, spoken):
+    """Option off, a 4xx, a 504 still_running or a gateway error: no fallback."""
+    entry = await _setup(hass, options={"fallback_to_home_assistant": fallback})
+    agent_id = _entity_id(hass, "conversation", entry.entry_id)
+    degraded = async_capture_events(hass, "openwebui_agent_degraded")
+    if isinstance(reply, Exception):
+        gateway.turns.side_effect = reply
+    else:
+        gateway.turns.return_value = reply
+    with patch(
+        "homeassistant.components.conversation.async_converse",
+        wraps=conversation.async_converse,
+    ) as converse:
+        result = await conversation.async_converse(
+            hass, "Open the garage", None, Context(), language="en", agent_id=agent_id
+        )
+    assert spoken in result.response.speech["plain"]["speech"]
+    assert OFFLINE not in result.response.speech["plain"]["speech"]
+    assert converse.call_count == 1  # only this test's own call
+    assert not degraded
+    assert hass.states.get(agent_id).attributes["degraded"] is False
 
 
 async def test_speech_to_text(hass, gateway):
@@ -941,6 +1112,13 @@ async def test_diagnostics(hass, gateway):
         "version": "18.0.0",
         "degraded": [],
         "open_mode": False,
+        "degraded_mode": None,
+        "token_needed": True,
+    }
+    assert result["degraded_answers"] == {
+        "fallback_to_home_assistant": False,
+        "last_answer": None,
+        "count": 0,
     }
     assert result["token_configured"] is True
     assert result["language"] == "el"
