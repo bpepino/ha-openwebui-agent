@@ -143,6 +143,12 @@ class GatewayUnauthorized(AuthenticationError):
     key = "gateway_unauthorized"
 
 
+class TokenRequired(GatewayUnauthorized):
+    """The gateway requires tokens and this entry has none."""
+
+    key = "token_required"
+
+
 class GatewayForbidden(PermissionDenied):
     """The API client token lacks the scope for this request."""
 

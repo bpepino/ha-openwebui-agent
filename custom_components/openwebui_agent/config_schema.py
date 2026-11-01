@@ -5,6 +5,8 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant.helpers.selector import (
+    LanguageSelector,
+    LanguageSelectorConfig,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
@@ -15,13 +17,20 @@ from homeassistant.helpers.selector import (
 
 from .client import Resource
 from .const import (
-    BACKEND_OPENWEBUI,
-    BACKENDS,
-    CONF_BACKEND,
+    CONF_COMPLETION_TIMEOUT,
+    CONF_GATEWAY_TOKEN,
+    CONF_GATEWAY_URL,
+    CONF_LANGUAGE,
     CONF_MODEL,
+    CONF_TTS_FORMAT,
+    CONF_TTS_VOICE,
     FEATURES,
+    LANGUAGES,
     NAME,
+    TTS_FORMATS,
 )
+
+PASSWORD = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
 
 
 def select(
@@ -39,28 +48,13 @@ def select(
     return SelectSelector(config)
 
 
-def connection_schema(values: dict, *, backend_choice: bool = True) -> vol.Schema:
-    """Build a connection form with a password selector for the API key.
-
-    The URL and key fields serve both backends: the Open WebUI URL and API key,
-    or the gateway URL and its API client token. Reauthentication keeps the
-    entry's backend, so it hides the choice.
-    """
-    schema: dict[Any, Any] = {}
-    if backend_choice:
-        schema[
-            vol.Required(
-                CONF_BACKEND, default=values.get(CONF_BACKEND, BACKEND_OPENWEBUI)
-            )
-        ] = select(list(BACKENDS), translation_key="backend")
+def connection_schema(values: dict) -> vol.Schema:
+    """Direct Open WebUI connection (deprecated) with a password field for the key."""
     return vol.Schema(
         {
-            **schema,
             vol.Required("service_name", default=values.get("service_name", NAME)): str,
             vol.Required("base_url", default=values.get("base_url", "")): str,
-            vol.Required("api_key"): TextSelector(
-                TextSelectorConfig(type=TextSelectorType.PASSWORD)
-            ),
+            vol.Required("api_key"): PASSWORD,
             vol.Required("verify_ssl", default=values.get("verify_ssl", True)): bool,
             vol.Required("timeout", default=values.get("timeout", 30)): vol.All(
                 vol.Coerce(int), vol.Range(min=1, max=300)
@@ -103,22 +97,45 @@ def model_schema(values: dict, models: list[dict]) -> vol.Schema:
     return vol.Schema(schema)
 
 
-def gateway_schema(values: dict, *, connection: bool) -> vol.Schema:
-    """Gateway mode: only how HA waits and listens; the gateway owns the agent."""
-    schema: dict[Any, Any] = {}
-    if connection:
-        schema[vol.Required("verify_ssl", default=values["verify_ssl"])] = bool
-        schema[vol.Required("timeout", default=values["timeout"])] = vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=300)
-        )
-    schema[vol.Required("completion_timeout", default=values["completion_timeout"])] = (
-        vol.All(vol.Coerce(int), vol.Range(min=1, max=3600))
+def gateway_schema(values: dict) -> vol.Schema:
+    """Ask for the gateway URL, an optional token (open mode needs none), a language."""
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_GATEWAY_URL, default=values.get(CONF_GATEWAY_URL, "")
+            ): TextSelector(TextSelectorConfig(type=TextSelectorType.URL)),
+            vol.Optional(
+                CONF_GATEWAY_TOKEN,
+                description={"suggested_value": values.get(CONF_GATEWAY_TOKEN)},
+            ): PASSWORD,
+            vol.Required(
+                CONF_LANGUAGE, default=values[CONF_LANGUAGE]
+            ): LanguageSelector(LanguageSelectorConfig(languages=list(LANGUAGES))),
+        }
     )
-    schema[vol.Required("conversation_mode", default=values["conversation_mode"])] = (
-        select(["questions", "always"], translation_key="conversation_mode")
+
+
+def token_schema() -> vol.Schema:
+    """Reauthentication asks only for a new token."""
+    return vol.Schema({vol.Optional(CONF_GATEWAY_TOKEN): PASSWORD})
+
+
+def gateway_options_schema(values: dict) -> vol.Schema:
+    """Gateway options: how long to wait for an answer, and the spoken voice."""
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_COMPLETION_TIMEOUT, default=values[CONF_COMPLETION_TIMEOUT]
+            ): vol.All(vol.Coerce(int), vol.Range(min=1, max=3600)),
+            vol.Optional(
+                CONF_TTS_VOICE,
+                description={"suggested_value": values[CONF_TTS_VOICE] or None},
+            ): str,
+            vol.Required(CONF_TTS_FORMAT, default=values[CONF_TTS_FORMAT]): select(
+                list(TTS_FORMATS), translation_key="tts_format"
+            ),
+        }
     )
-    schema[vol.Required("strip_markdown", default=values["strip_markdown"])] = bool
-    return vol.Schema(schema)
 
 
 def resource_options(resources: list[Resource], saved: list[str]) -> list[dict]:

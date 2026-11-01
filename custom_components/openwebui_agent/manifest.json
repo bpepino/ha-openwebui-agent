@@ -10,11 +10,11 @@
   ],
   "documentation": "https://github.com/bpepino/ha-openwebui-agent",
   "integration_type": "service",
-  "iot_class": "cloud_polling",
+  "iot_class": "local_polling",
   "issue_tracker": "https://github.com/bpepino/ha-openwebui-agent/issues",
   "requirements": [
     "markdown-it-py==4.2.0",
     "mdit-plain==1.0.1"
   ],
-  "version": "2.1.0"
+  "version": "3.0.0"
 }

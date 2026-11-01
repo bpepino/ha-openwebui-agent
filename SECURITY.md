@@ -1,5 +1,7 @@
 # Security
 
+The AI gateway runs in open mode by default: anyone who can reach it on your network can use it as the household owner. Keep it on the LAN, and turn on its **Require tokens** setting if that is not acceptable. Gateway API client tokens are secrets; the integration stores the token in its config entry and sends it only as an `Authorization` header to the configured gateway. Diagnostics never contain the gateway URL or token.
+
 Open WebUI API keys are secrets and act with the permissions of their user. Use a dedicated least-privilege user where practical. Model-selected tools and terminals may change devices, data and other real-world resources; configure authorization on Open WebUI and its tool servers.
 
 Avoid unnecessary public exposure of Open WebUI. Use HTTPS over untrusted networks and leave certificate verification enabled. Restrict API endpoint access only after allowing the native chat/task and discovery routes used by the integration.

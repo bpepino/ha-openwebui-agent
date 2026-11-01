@@ -1,6 +1,21 @@
 # Changelog
 
-## 2.1.0 — unreleased
+## 3.0.0 — unreleased
+
+Home Assistant now talks only to the home AI gateway, through this one integration. Nothing else is needed in Home Assistant.
+
+- **One gateway, three entities.** A gateway entry provides the conversation agent, a speech-to-text entity (`POST /v1/audio/transcriptions`) and a text-to-speech entity (`POST /v1/audio/speech`), grouped on one **AI gateway** device that shows the gateway's version and links to its dashboard. Speech-to-text uploads WAV in the configured language and uses the gateway's repaired transcript (`fixed_greek`) when present, else `text`. Text-to-speech sends the configured voice (empty: the gateway's speech profile voice) and format (MP3, WAV or Opus).
+- **Plain setup.** Add integration → **AI gateway** → URL, optional token, language → a **test step** showing the gateway's version, health and whether it runs in open mode. Health comes from `GET /health`; access is checked with a read-only probe of the assistant API. **Reconfigure** changes the URL, token or language; reauthentication asks for a token when the gateway starts requiring one or rejects the saved one.
+- **Open mode.** The token is optional. Without one, no `Authorization` header is sent.
+- **Options:** turn timeout, voice and audio format only. 2.1.0's SSL verification, request timeout, Continue listening and Strip Markdown keep their saved values but are no longer shown.
+- **Turns.** The satellite's device ID and area name are resolved from the entity, device and area registries (a satellite entity without a device ID now sends its device). HA's conversation ID maps to the gateway's `conversation_id`; `new_chat` replaces the mapping. A `still_running` answer with a `turn_id` is polled at `GET /assistant/v1/turns/{turn_id}` every second until the turn timeout; `expects_reply` sets `continue_conversation`. Nothing is retried.
+- The gateway client now uses Home Assistant's shared httpx client.
+- **Direct Open WebUI mode is deprecated** and will be removed in 3.1. It stays behind **Open WebUI directly (deprecated)** in the setup menu; existing direct entries keep working and get a repair notice. Its documentation moved to [docs/direct-mode.md](docs/direct-mode.md).
+- `iot_class` is now `local_polling`: there is no cloud service.
+
+Validation: 179 tests passed on Linux with Python 3.14.10 and Home Assistant 2026.6.0 (`pytest-homeassistant-custom-component` 0.13.336), 35 of them Home Assistant fixture tests with respx simulating the gateway (config flow and test step, open mode without a token, tokens, reauth, reconfigure, options, Assist turns with `still_running` polling, conversation mapping and `continue_conversation`, STT, TTS, diagnostics, direct-mode deprecation). The 144 portable tests also passed on Windows with Python 3.12. Ruff lint and format passed. Not run: hassfest, HACS validation, and any test against a live gateway. The gateway checkout inspected for this change (version 18.0.0) does not yet answer `still_running` with a `turn_id`; it answers a deadline with `504` and `still_running: true`, which this version reports as "still working".
+
+## 2.1.0 — unreleased (superseded by 3.0.0)
 
 - Add **gateway mode**: a new connection choice that sends Assist turns to a home AI gateway (`POST /assistant/v1/turns`) with an API client token, instead of talking to Open WebUI directly. The gateway owns the model, tools, features, thinking, speaker identity, conversation continuation and chat retention; setup and Configure show only the answer timeout, request timeout, SSL verification, Continue listening and Strip Markdown.
 - Gateway turns forward HA's conversation ID, language, device ID (or satellite entity ID), the device's area name and `extra_system_prompt`. Speech uses the gateway's TTS-ready `speech_text`; the Assist chat log gets `display_text`. The gateway's `expects_reply` also keeps satellites listening; stop phrases still win.

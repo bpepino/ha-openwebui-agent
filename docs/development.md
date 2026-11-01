@@ -16,7 +16,7 @@ The protocol/state tests run on Python 3.12+ without Home Assistant. Full HA tes
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements-test.txt
-python -m pytest tests/test_client.py tests/test_migration.py tests/test_history.py
+python -m pytest tests/test_gateway_client.py tests/test_client.py tests/test_migration.py tests/test_history.py
 python -m ruff check .
 python -m ruff format --check .
 ```
@@ -30,13 +30,27 @@ python -m pip install -r requirements.txt -r requirements-ha-test.txt
 python -m pytest -q
 ```
 
+On Windows, run that suite in WSL. Without a system Python 3.14, [uv](https://docs.astral.sh/uv/) can provide one in an isolated folder:
+
+```sh
+python3 -m venv ~/.cache/owui-agent-test/uvenv
+~/.cache/owui-agent-test/uvenv/bin/pip install uv
+UV=~/.cache/owui-agent-test/uvenv/bin/uv
+$UV python install 3.14
+$UV venv -p 3.14 ~/.cache/owui-agent-test/venv
+VIRTUAL_ENV=~/.cache/owui-agent-test/venv $UV pip install -r requirements.txt -r requirements-ha-test.txt
+~/.cache/owui-agent-test/venv/bin/python -m pytest -q -p no:cacheprovider
+```
+
+`requirements-ha-test.txt` also pins the requirements of the core components the tests load (`conversation`, `tts`, `ffmpeg`), which Home Assistant would otherwise install at runtime.
+
 `scripts/setup`, `scripts/lint`, and `scripts/develop` remain available. The development script starts a separate local Home Assistant using `config/configuration.yaml`. Keep credentials and real runtime configuration out of Git.
 
 ## Validation
 
 - Ruff lint and formatting cover Python source and tests.
-- Mock HTTP tests exercise actual client/state source, with no HA runtime required.
-- `tests/ha` uses real Home Assistant fixtures for setup/options, reauth, migration, Assist, diagnostics and unload.
+- Mock HTTP tests exercise actual client/state source, with no HA runtime required. `tests/test_gateway_client.py` runs the real gateway client against a simulated gateway through [respx](https://lundberg.github.io/respx/): Home Assistant's test plugin blocks real sockets.
+- `tests/ha` uses real Home Assistant fixtures for the gateway flow (open mode, tokens, test step, reauth, reconfigure, options), Assist turns with `still_running` polling and conversation mapping, speech-to-text, text-to-speech, diagnostics and unload, with respx simulating the gateway's HTTP API. Direct-mode tests cover setup, options, reauth, migration, Assist and the deprecation notice.
 - `.github/workflows/lint.yml` runs the full Linux suite.
 - `.github/workflows/validate.yml` retains official hassfest and HACS validation. HACS remote checks need the repository to be published/accessible; a local JSON check is not a substitute.
 - For a local hassfest run, use a compatible Home Assistant core checkout and its `python -m script.hassfest --integration-path /absolute/path/to/custom_components/openwebui_agent` command. Follow that checkout's development dependencies.

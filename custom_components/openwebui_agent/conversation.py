@@ -21,6 +21,7 @@ from mdit_plain.renderer import RendererPlain
 
 from .const import (
     BACKEND_GATEWAY,
+    CONF_LANGUAGE,
     DEFAULT_OPTIONS,
     DOMAIN,
     GATEWAY_DEFAULT_OPTIONS,
@@ -28,6 +29,7 @@ from .const import (
     entry_backend,
 )
 from .exceptions import OpenWebUIError
+from .gateway import gateway_device_info
 
 
 async def async_setup_entry(
@@ -50,7 +52,12 @@ class OpenWebUIAgent(conversation.ConversationEntity):
         self.manager = hass.data[DOMAIN][entry.entry_id]
         self._gateway = entry_backend(entry.data) == BACKEND_GATEWAY
         self._attr_unique_id = entry.entry_id
-        self._attr_name = entry.title
+        if self._gateway:
+            # Named after the device it shares with speech-to-text and text-to-speech.
+            self._attr_name = None
+            self._attr_device_info = gateway_device_info(entry, self.manager)
+        else:
+            self._attr_name = entry.title
         self._markdown = MarkdownIt(renderer_cls=RendererPlain)
         self._talk_sessions: set[str] = set()
 
@@ -92,8 +99,10 @@ class OpenWebUIAgent(conversation.ConversationEntity):
         """Allow the selected model to handle the user's language."""
         return MATCH_ALL
 
-    def _area_name(self, device_id: str | None, satellite_id: str | None) -> str | None:
-        """Name the room of the satellite or device; the model understands names."""
+    def _device_and_area(
+        self, device_id: str | None, satellite_id: str | None
+    ) -> tuple[str | None, str | None]:
+        """Return the satellite's device and its room name (the model reads names)."""
         area_id = None
         if satellite_id and (entity := er.async_get(self.hass).async_get(satellite_id)):
             area_id = entity.area_id
@@ -101,26 +110,23 @@ class OpenWebUIAgent(conversation.ConversationEntity):
         if not area_id and device_id:
             if device := dr.async_get(self.hass).async_get(device_id):
                 area_id = device.area_id
-        if not area_id:
-            return None
-        area = ar.async_get(self.hass).async_get_area(area_id)
-        return area.name if area else area_id
+        area = ar.async_get(self.hass).async_get_area(area_id) if area_id else None
+        return device_id or satellite_id, area.name if area else area_id
 
     async def _async_gateway_turn(
         self, user_input: conversation.ConversationInput, chat_log: ChatLog
     ):
         """Pass what HA knows; the gateway resolves identity, profile and chat."""
         options = {**GATEWAY_DEFAULT_OPTIONS, **self.entry.options}
-        satellite_id = getattr(user_input, "satellite_id", None)
-        context = user_input.context
+        device_id, area = self._device_and_area(
+            user_input.device_id, getattr(user_input, "satellite_id", None)
+        )
         return await self.manager.async_turn(
             user_input.text,
             conversation_id=chat_log.conversation_id,
-            language=user_input.language,
-            user_id=context.user_id if context else None,
-            device_id=user_input.device_id,
-            satellite_id=satellite_id,
-            area_id=self._area_name(user_input.device_id, satellite_id),
+            language=user_input.language or self.entry.data.get(CONF_LANGUAGE),
+            device_id=device_id,
+            area=area,
             extra_instructions=getattr(user_input, "extra_system_prompt", None),
             timeout_s=options["completion_timeout"],
         )

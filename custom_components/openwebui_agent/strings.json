@@ -4,19 +4,60 @@
     "step": {
       "user": {
         "title": "Connect Open WebUI Agent",
-        "description": "Choose Open WebUI to connect directly, or AI gateway to use the home AI gateway. For the gateway, enter its URL and an API client token from the gateway admin API clients screen.",
+        "description": "Home Assistant talks only to the AI gateway: it provides the conversation agent, speech-to-text and text-to-speech. Nothing else is needed in Home Assistant.",
+        "menu_options": {
+          "gateway": "AI gateway (recommended)",
+          "openwebui": "Open WebUI directly (deprecated, removed in 3.1)"
+        }
+      },
+      "gateway": {
+        "title": "Connect the AI gateway",
+        "description": "Enter the gateway's URL. The next step tests the connection.",
         "data": {
-          "backend": "Connection",
-          "service_name": "Instance name",
-          "base_url": "Open WebUI or gateway URL",
-          "api_key": "API key or gateway token",
-          "verify_ssl": "Verify SSL",
-          "timeout": "API request timeout (seconds)"
+          "gateway_url": "Gateway URL",
+          "gateway_token": "Token (optional)",
+          "language": "Language"
         },
         "data_description": {
-          "backend": "AI gateway: the gateway chooses the model, tools, memory, thinking, chat history and who is speaking.",
-          "base_url": "Open WebUI: its base URL. AI gateway: the gateway URL, not the Open WebUI URL.",
-          "api_key": "Open WebUI: an API key. AI gateway: the token shown once when you create an API client."
+          "gateway_url": "The gateway's address and port, for example {example}. Not the Open WebUI address.",
+          "gateway_token": "Leave empty while the gateway runs in open mode (its default). Needed only when the gateway requires tokens: create an API client of kind ha in the gateway dashboard and paste its token.",
+          "language": "The language you speak. Speech-to-text sends it to the gateway, and text-to-speech uses it by default."
+        }
+      },
+      "reconfigure": {
+        "title": "Change the AI gateway connection",
+        "description": "The next step tests the new settings before they are saved.",
+        "data": {
+          "gateway_url": "Gateway URL",
+          "gateway_token": "Token (optional)",
+          "language": "Language"
+        },
+        "data_description": {
+          "gateway_url": "The gateway's address and port, for example {example}. Not the Open WebUI address.",
+          "gateway_token": "Leave empty while the gateway runs in open mode (its default). Needed only when the gateway requires tokens: create an API client of kind ha in the gateway dashboard and paste its token.",
+          "language": "The language you speak. Speech-to-text sends it to the gateway, and text-to-speech uses it by default."
+        }
+      },
+      "test": {
+        "title": "Gateway test",
+        "description": "Connected to the AI gateway, version {version}.\n\nStatus: {status}.\nAccess: {access}.\n\nSubmit to save. Then open Settings → Voice assistants and select this gateway as the conversation agent, speech-to-text and text-to-speech of your Assist pipeline."
+      },
+      "reauth_confirm": {
+        "title": "Gateway token",
+        "description": "The gateway now requires a token, or rejected the saved one. Create an API client of kind ha in the gateway dashboard and paste its token. Leave empty if the gateway is back in open mode.",
+        "data": {
+          "gateway_token": "Token"
+        }
+      },
+      "openwebui": {
+        "title": "Connect Open WebUI directly (deprecated)",
+        "description": "Deprecated: direct Open WebUI mode will be removed in 3.1. Use the AI gateway instead. Enter the Open WebUI URL and an API key.",
+        "data": {
+          "service_name": "Instance name",
+          "base_url": "Open WebUI URL",
+          "api_key": "API key",
+          "verify_ssl": "Verify SSL",
+          "timeout": "API request timeout (seconds)"
         }
       },
       "agent": {
@@ -58,20 +99,6 @@
           "terminal_mode": "Terminal mode",
           "terminal_id": "Terminal"
         }
-      },
-      "gateway": {
-        "title": "AI gateway",
-        "description": "Gateway status: {status}. The gateway decides the model, tools, memory, thinking, chat history and who is speaking. These settings only change how Home Assistant waits and listens.",
-        "data": {
-          "completion_timeout": "Answer timeout (seconds)",
-          "conversation_mode": "Continue listening",
-          "strip_markdown": "Strip Markdown"
-        },
-        "data_description": {
-          "completion_timeout": "How long Home Assistant waits for an answer. The gateway's profile can only shorten it. If it passes after the gateway accepted the request, you hear that it is still working.",
-          "conversation_mode": "Questions continues when the reply ends in a question. Say \"let's talk\" to keep the current session listening, or \"end conversation\" to stop. Always continues after every successful reply. Requires a compatible Assist satellite.",
-          "strip_markdown": "Clean the text shown in the Assist chat. Speech always uses the gateway's speech text."
-        }
       }
     },
     "error": {
@@ -93,16 +120,33 @@
       "gateway_unreachable": "Cannot connect to the AI gateway. Check the URL, port and network.",
       "gateway_unauthorized": "The AI gateway rejected the token. Create or copy a current token in the gateway admin API clients screen.",
       "gateway_forbidden": "The gateway token lacks permission. Check its scopes in the gateway admin.",
-      "not_gateway": "This URL did not answer like the AI gateway. Enter the gateway URL and port, not the Open WebUI URL.",
-      "gateway_error": "The AI gateway reported an internal error. Check the gateway logs."
+      "not_gateway": "This URL did not answer like the AI gateway. Enter the gateway's URL and port, not the Open WebUI URL.",
+      "gateway_error": "The AI gateway reported an internal error. Check the gateway logs.",
+      "token_required": "The gateway requires a token. Create an API client of kind ha in the gateway dashboard and enter its token."
     },
     "abort": {
-      "already_configured": "An instance with this name is already configured.",
-      "reauth_successful": "Authentication updated."
+      "already_configured": "This gateway or instance is already configured.",
+      "reauth_successful": "Authentication updated.",
+      "reconfigure_successful": "The gateway connection was updated.",
+      "reconfigure_direct": "Direct Open WebUI entries cannot be reconfigured. Add the AI gateway instead."
     }
   },
   "options": {
     "step": {
+      "init": {
+        "title": "AI gateway",
+        "description": "The gateway decides the model, tools, memory, chat history and who is speaking. These settings only change how long Home Assistant waits and how answers sound.",
+        "data": {
+          "completion_timeout": "Turn timeout (seconds)",
+          "tts_voice": "Voice",
+          "tts_format": "Audio format"
+        },
+        "data_description": {
+          "completion_timeout": "How long Home Assistant waits for an answer. The gateway's profile can only shorten it. If it passes after the gateway accepted the request, you hear that it is still working.",
+          "tts_voice": "Leave empty for the gateway's speech profile voice.",
+          "tts_format": "The audio container the gateway returns. Home Assistant converts it for your satellites when needed."
+        }
+      },
       "agent": {
         "title": "Model and agent features",
         "description": "Open WebUI runs the agent and its tools. Features also require server configuration and model/user permissions. Code Interpreter requires a server engine such as Jupyter.",
@@ -142,22 +186,6 @@
           "terminal_mode": "Terminal mode",
           "terminal_id": "Terminal"
         }
-      },
-      "gateway": {
-        "title": "AI gateway",
-        "description": "Gateway status: {status}. The gateway decides the model, tools, memory, thinking, chat history and who is speaking. These settings only change how Home Assistant waits and listens.",
-        "data": {
-          "verify_ssl": "Verify SSL",
-          "timeout": "API request timeout (seconds)",
-          "completion_timeout": "Answer timeout (seconds)",
-          "conversation_mode": "Continue listening",
-          "strip_markdown": "Strip Markdown"
-        },
-        "data_description": {
-          "completion_timeout": "How long Home Assistant waits for an answer. The gateway's profile can only shorten it. If it passes after the gateway accepted the request, you hear that it is still working.",
-          "conversation_mode": "Questions continues when the reply ends in a question. Say \"let's talk\" to keep the current session listening, or \"end conversation\" to stop. Always continues after every successful reply. Requires a compatible Assist satellite.",
-          "strip_markdown": "Clean the text shown in the Assist chat. Speech always uses the gateway's speech text."
-        }
       }
     },
     "error": {
@@ -179,8 +207,9 @@
       "gateway_unreachable": "Cannot connect to the AI gateway. Check the URL, port and network.",
       "gateway_unauthorized": "The AI gateway rejected the token. Create or copy a current token in the gateway admin API clients screen.",
       "gateway_forbidden": "The gateway token lacks permission. Check its scopes in the gateway admin.",
-      "not_gateway": "This URL did not answer like the AI gateway. Enter the gateway URL and port, not the Open WebUI URL.",
-      "gateway_error": "The AI gateway reported an internal error. Check the gateway logs."
+      "not_gateway": "This URL did not answer like the AI gateway. Enter the gateway's URL and port, not the Open WebUI URL.",
+      "gateway_error": "The AI gateway reported an internal error. Check the gateway logs.",
+      "token_required": "The gateway requires a token. Create an API client of kind ha in the gateway dashboard and enter its token."
     }
   },
   "selector": {
@@ -209,11 +238,30 @@
         "always": "Always continue"
       }
     },
-    "backend": {
+    "tts_format": {
       "options": {
-        "openwebui": "Open WebUI (direct)",
-        "gateway": "AI gateway"
+        "mp3": "MP3",
+        "wav": "WAV",
+        "opus": "Opus (Ogg)"
       }
+    }
+  },
+  "entity": {
+    "stt": {
+      "speech_to_text": {
+        "name": "Speech-to-text"
+      }
+    },
+    "tts": {
+      "text_to_speech": {
+        "name": "Text-to-speech"
+      }
+    }
+  },
+  "issues": {
+    "direct_mode_deprecated": {
+      "title": "Direct Open WebUI mode is deprecated",
+      "description": "{title} talks to Open WebUI directly. This mode will be removed in version 3.1. Add the AI gateway (Settings → Devices & services → Add integration → Open WebUI Agent → AI gateway), select it in your Assist pipeline, then delete {title}."
     }
   },
   "exceptions": {
@@ -309,6 +357,9 @@
     },
     "gateway_error": {
       "message": "Something went wrong in the assistant gateway."
+    },
+    "token_required": {
+      "message": "The assistant gateway needs a token for Home Assistant."
     }
   }
 }

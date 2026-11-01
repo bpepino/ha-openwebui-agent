@@ -1,4 +1,4 @@
-"""Real Home Assistant config, conversation, migration and lifecycle tests."""
+"""Direct Open WebUI mode (deprecated): config, conversation, migration, lifecycle."""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -8,6 +8,7 @@ import pytest
 from homeassistant import config_entries
 from homeassistant.components.conversation import ConversationInput
 from homeassistant.core import Context
+from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.openwebui_agent import async_migrate_entry
@@ -34,6 +35,19 @@ CONNECTION = {
     "api_key": "fake-key",
 }
 MODELS = [{"id": "custom-model", "name": "My Agent"}]
+
+
+async def _start_direct_flow(hass):
+    """Open the deprecated direct mode, kept behind the setup menu for one release."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    assert result["type"] == "menu"
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "openwebui"}
+    )
+    assert result["step_id"] == "openwebui"
+    return result
 
 
 @pytest.fixture
@@ -65,10 +79,7 @@ async def test_setup_flow(hass, client, upstream_installed):
     with patch(
         "custom_components.openwebui_agent.async_setup_entry", return_value=True
     ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": config_entries.SOURCE_USER}
-        )
-        assert result["step_id"] == "user"
+        result = await _start_direct_flow(hass)
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], {**CONNECTION, "timeout": 30, "verify_ssl": True}
         )
@@ -111,10 +122,9 @@ async def test_setup_flow(hass, client, upstream_installed):
 async def test_invalid_auth(hass, client):
     """Translate a rejected key rather than reporting a generic connection failure."""
     client.async_get_models.side_effect = AuthenticationError()
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": config_entries.SOURCE_USER},
-        data={**CONNECTION, "timeout": 30, "verify_ssl": True},
+    result = await _start_direct_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {**CONNECTION, "timeout": 30, "verify_ssl": True}
     )
     assert result["errors"] == {"base": "invalid_auth"}
 
@@ -290,8 +300,36 @@ async def test_setup_unload_and_auth_failure(hass):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
         assert entry.entry_id in hass.data[DOMAIN]
+        # Direct mode is a conversation agent only; speech belongs to the gateway.
+        assert not hass.states.async_entity_ids(("stt", "tts"))
         assert await hass.config_entries.async_unload(entry.entry_id)
         assert entry.entry_id not in hass.data[DOMAIN]
+
+
+async def test_direct_mode_deprecation_notice(hass):
+    """Direct entries get a repair notice until they are removed."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Open WebUI Agent - Test",
+        data=CONNECTION,
+        options={**DEFAULT_OPTIONS, "chat_model": "custom-model"},
+        version=2,
+    )
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.openwebui_agent.OpenWebUIClient", autospec=True
+    ) as cls:
+        cls.return_value.async_get_models.return_value = MODELS
+        cls.return_value.async_get_version.return_value = "0.11.4"
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        issue = ir.async_get(hass).async_get_issue(
+            DOMAIN, f"direct_mode_deprecated_{entry.entry_id}"
+        )
+        assert issue.severity is ir.IssueSeverity.WARNING
+        assert issue.translation_placeholders == {"title": entry.title}
+        assert await hass.config_entries.async_remove(entry.entry_id)
+    assert not ir.async_get(hass).issues
 
 
 async def test_reauth_preserves_entry(hass, client):
@@ -308,6 +346,7 @@ async def test_reauth_preserves_entry(hass, client):
         context={"source": config_entries.SOURCE_REAUTH, "entry_id": entry.entry_id},
         data=CONNECTION,
     )
+    assert result["step_id"] == "openwebui"
     with patch.object(hass.config_entries, "async_schedule_reload"):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],

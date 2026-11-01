@@ -1,11 +1,27 @@
 # Manual acceptance tests
 
+## Gateway mode (3.0.0)
+
+These need a running AI gateway on your LAN and an Assist satellite (or the Assist dialog with a microphone). They have not been run against a live gateway as part of the 3.0.0 change; the automated tests simulate the gateway at the HTTP layer. Record the integration, Home Assistant and gateway versions with your results.
+
+1. **Open mode setup.** Add the integration, choose **AI gateway**, enter the gateway URL and leave the token empty. The test step must show the version the gateway dashboard shows, and "open mode". Submit: one **AI gateway** device appears with a conversation, a speech-to-text and a text-to-speech entity.
+2. **Tokens required.** Turn on **Require tokens** in the gateway and reload the entry. Home Assistant must ask for a token. A wrong token stays on the form with an error; the token of an API client of kind `ha` is accepted and the entry loads. Turn the setting off again if you use open mode.
+3. **Whole pipeline.** In **Settings → Voice assistants** select **AI gateway** as conversation agent, speech-to-text and text-to-speech, and turn off **Prefer handling commands locally**. Say "Turn on the office light." The gateway's request log must show one transcription, one turn carrying the satellite's device and area, and one speech request with the configured voice and format. The light must actually change.
+4. **Repaired transcript.** Speak a sentence in the household language that the gateway repairs. The Assist pipeline debug view must show the repaired text, and the gateway must greet or attribute the identified speaker.
+5. **Follow-up.** Ask something that makes the agent ask back. The satellite must listen again without a wake word. Answer; the gateway must continue the same conversation (same chat in Open WebUI).
+6. **Long turn.** Set the turn timeout to 10 seconds and ask for something slow. You must hear "I'm still working on that", and the gateway must receive the turn only once. With a gateway that answers `still_running` with a `turn_id`, its request log shows one poll per second until the answer.
+7. **Options.** Change the voice and the audio format in **Configure**. The next answer must use them; a sentence spoken before must not replay in the old voice.
+8. **Failures.** Stop the gateway: Assist must say it can't reach the gateway, and a Home Assistant restart must keep retrying the entry instead of asking for a token. Start the gateway again: the entry recovers.
+9. **Diagnostics.** Download diagnostics: they must show the gateway's version and access mode and contain neither the URL nor the token.
+
+## Direct Open WebUI mode (deprecated)
+
 These tests require your own configured Home Assistant and Open WebUI instance. User testing confirmed tools, memory and the beta.3 conversation-history fix on Open WebUI 0.11.4; the full matrix below has not been independently run against a live server. Save the integration, HA, Open WebUI, model/provider versions and results. Compare with the same Open WebUI API-key user in the browser.
 
 ## Setup
 
 1. Install this component locally and restart HA 2026.6.0+.
-2. Configure an API key and select the same model you use successfully in Open WebUI.
+2. Add the integration with **Open WebUI directly (deprecated)**. Configure an API key and select the same model you use successfully in Open WebUI.
 3. Choose model-default tools or select your discovered server tools explicitly. Authorize MCP OAuth in the browser if needed.
 4. Select Open WebUI Agent in an Assist pipeline. Turn off **Prefer handling commands locally** so HA cannot satisfy the test before calling Open WebUI.
 5. Enable integration debug logs and open the Open WebUI chat list. Do not publish unsanitized server logs.

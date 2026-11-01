@@ -1,5 +1,7 @@
 """Diagnostics intentionally omit URLs, identifiers, prompts and secrets."""
 
+from dataclasses import asdict
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.core import HomeAssistant
@@ -7,6 +9,7 @@ from homeassistant.core import HomeAssistant
 from .const import (
     BACKEND_GATEWAY,
     BACKEND_OPENWEBUI,
+    CONF_LANGUAGE,
     DEFAULT_OPTIONS,
     DOMAIN,
     FEATURES,
@@ -18,23 +21,28 @@ from .exceptions import OpenWebUIError
 
 
 async def _async_gateway_diagnostics(hass: HomeAssistant, entry: ConfigEntry) -> dict:
-    """Gateway mode: live health (allowlisted fields) and local settings only."""
+    """Gateway mode: a live check (allowlisted fields) and local settings only."""
     client = hass.data[DOMAIN][entry.entry_id]
     options = {**GATEWAY_DEFAULT_OPTIONS, **entry.options}
     try:
-        health = await client.async_health()
+        gateway = asdict(await client.async_check())
     except OpenWebUIError as err:
-        health = {"error": err.key}
+        gateway = {"error": err.key}
     return {
         "integration_version": VERSION,
         "home_assistant_version": HA_VERSION,
         "backend": BACKEND_GATEWAY,
-        "gateway_health": health,
+        "gateway": gateway,
+        "token_configured": client.has_token,
+        "language": entry.data.get(CONF_LANGUAGE),
+        "completion_timeout": options["completion_timeout"],
+        "tts_format": options["tts_format"],
+        "tts_voice_configured": bool(options["tts_voice"]),
         "conversation_mode": options["conversation_mode"],
         "strip_markdown": options["strip_markdown"],
         "timeout": options["timeout"],
-        "completion_timeout": options["completion_timeout"],
         "verify_ssl": options["verify_ssl"],
+        "mapped_conversation_count": len(client.conversations),
         "last_identity_confidence": client.last_confidence,
         "last_turn_timing_ms": client.last_timings,
     }

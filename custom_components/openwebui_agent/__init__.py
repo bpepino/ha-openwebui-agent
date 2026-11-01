@@ -6,6 +6,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
@@ -13,61 +14,85 @@ from homeassistant.helpers.storage import Store
 from .client import OpenWebUIClient
 from .const import (
     BACKEND_GATEWAY,
-    CONF_GATEWAY_TOKEN,
-    CONF_GATEWAY_URL,
     DEFAULT_OPTIONS,
     DOMAIN,
-    GATEWAY_DEFAULT_OPTIONS,
     LOGGER,
     VERSION,
     entry_backend,
 )
 from .exceptions import AuthenticationError, OpenWebUIError
-from .gateway_client import GatewayClient
+from .gateway import create_gateway_client
 from .history import ChatHistoryCleaner
 from .migration import migrate_options
 from .state import ConversationManager
 
-PLATFORMS = (Platform.CONVERSATION,)
+# The gateway serves the whole Assist pipeline: agent, speech-to-text and
+# text-to-speech. Direct Open WebUI mode (deprecated) is a conversation agent.
+GATEWAY_PLATFORMS = (Platform.CONVERSATION, Platform.STT, Platform.TTS)
+OPENWEBUI_PLATFORMS = (Platform.CONVERSATION,)
+DOCS_URL = (
+    "https://github.com/bpepino/ha-openwebui-agent#direct-open-webui-mode-deprecated"
+)
+
+
+def _platforms(entry: ConfigEntry) -> tuple[Platform, ...]:
+    if entry_backend(entry.data) == BACKEND_GATEWAY:
+        return GATEWAY_PLATFORMS
+    return OPENWEBUI_PLATFORMS
+
+
+def _deprecation_issue_id(entry: ConfigEntry) -> str:
+    return f"direct_mode_deprecated_{entry.entry_id}"
 
 
 async def _async_setup_gateway(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Gateway mode: check URL and token; the gateway owns chats and retention."""
-    options = {**GATEWAY_DEFAULT_OPTIONS, **entry.options}
-    client = GatewayClient(
-        entry.data[CONF_GATEWAY_URL],
-        entry.data[CONF_GATEWAY_TOKEN],
-        async_get_clientsession(hass),
-        options["timeout"],
-        options["verify_ssl"],
-    )
+    """Gateway mode: check the URL and access; the gateway owns everything else."""
+    client = create_gateway_client(hass, entry.data, entry.options)
     try:
-        health = await client.async_health()
+        status = await client.async_check()
     except AuthenticationError as err:
         raise ConfigEntryAuthFailed(
-            "The gateway rejected the API client token"
+            "The gateway requires a token or rejected this one"
         ) from err
     except OpenWebUIError as err:
         raise ConfigEntryNotReady("The AI gateway is unavailable") from err
-    if not health["openwebui"].get("reachable"):
-        # Turns report this themselves; the gateway may recover without a reload.
-        LOGGER.warning("The AI gateway reports Open WebUI as unreachable")
+    if status.degraded:
+        # Turns report failures themselves; the gateway may recover on its own.
+        LOGGER.warning(
+            "The AI gateway reports unavailable subsystems: %s",
+            ", ".join(status.degraded),
+        )
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = client
     try:
-        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        await hass.config_entries.async_forward_entry_setups(entry, GATEWAY_PLATFORMS)
     except Exception:
         await client.async_close()
         hass.data[DOMAIN].pop(entry.entry_id, None)
         raise
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
-    LOGGER.debug("Open WebUI Agent %s initialized in gateway mode", VERSION)
+    LOGGER.debug(
+        "Open WebUI Agent %s initialized in gateway mode (gateway %s, open mode %s)",
+        VERSION,
+        status.version,
+        status.open_mode,
+    )
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Validate authentication before creating the conversation entity."""
+    """Validate authentication before creating the entities."""
     if entry_backend(entry.data) == BACKEND_GATEWAY:
         return await _async_setup_gateway(hass, entry)
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        _deprecation_issue_id(entry),
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="direct_mode_deprecated",
+        translation_placeholders={"title": entry.title},
+        learn_more_url=DOCS_URL,
+    )
     options = {**DEFAULT_OPTIONS, **entry.options}
     client = OpenWebUIClient(
         entry.data["base_url"],
@@ -95,7 +120,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     manager = ConversationManager(client, cleaner=cleaner)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = manager
     try:
-        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        await hass.config_entries.async_forward_entry_setups(entry, OPENWEBUI_PLATFORMS)
     except Exception:
         await manager.async_close()
         hass.data[DOMAIN].pop(entry.entry_id, None)
@@ -110,17 +135,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.async_create_background_task(
             hass, cleaner.async_cleanup(), "openwebui_chat_cleanup"
         )
+    LOGGER.warning(
+        "Direct Open WebUI mode is deprecated and will be removed in 3.1; "
+        "add the AI gateway instead"
+    )
     LOGGER.debug("Open WebUI Agent %s initialized", VERSION)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload the entity and cancel pending local requests."""
-    if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+    """Unload the entities and cancel pending local requests."""
+    if not await hass.config_entries.async_unload_platforms(entry, _platforms(entry)):
         return False
     manager = hass.data[DOMAIN].pop(entry.entry_id)
     await manager.async_close()
     return True
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Drop the deprecation notice of a removed direct entry."""
+    ir.async_delete_issue(hass, DOMAIN, _deprecation_issue_id(entry))
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:

@@ -1,3 +1,7 @@
 pytest-homeassistant-custom-component==0.13.336
+respx==0.23.1
+# Requirements of the core components the tests load (HA installs them at runtime).
 hassil==3.5.0
 home-assistant-intents==2026.6.1
+mutagen==1.47.0
+ha-ffmpeg==3.2.2

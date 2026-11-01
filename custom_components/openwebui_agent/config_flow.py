@@ -1,8 +1,11 @@
-"""Connection, discovery and agent options for Open WebUI Agent.
+"""One config flow: the home AI gateway, or (deprecated) Open WebUI directly.
 
-Two backends: Open WebUI directly (discovery and native agent options here), or
-the home AI gateway (URL, API client token and voice timing only; the gateway
-owns model, tools, features, identity and chat history).
+Gateway: the URL, an optional token and the language, then a test step that
+shows the gateway's version and whether it runs in open mode. Options: the turn
+timeout and the text-to-speech voice and format. The gateway owns the model,
+tools, features, identity, chat history and the voice pipeline.
+
+Direct Open WebUI mode keeps its discovery and agent steps for one more release.
 """
 
 import asyncio
@@ -15,26 +18,35 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .client import OpenWebUIClient, normalize_url
 from .config_schema import (
     connection_schema,
+    gateway_options_schema,
     gateway_schema,
     model_schema,
     terminal_schema,
+    token_schema,
     tools_schema,
 )
 from .const import (
     BACKEND_GATEWAY,
     BACKEND_OPENWEBUI,
+    BACKENDS,
     CONF_BACKEND,
     CONF_GATEWAY_TOKEN,
     CONF_GATEWAY_URL,
+    CONF_LANGUAGE,
     CONF_MODEL,
+    CONF_TTS_VOICE,
     DEFAULT_OPTIONS,
     DOMAIN,
     GATEWAY_DEFAULT_OPTIONS,
+    GATEWAY_OPTIONS,
+    GATEWAY_TITLE,
     NAME,
+    default_language,
     entry_backend,
 )
 from .exceptions import OpenWebUIError
-from .gateway_client import GatewayClient
+from .gateway import create_gateway_client
+from .gateway_client import GatewayStatus
 
 
 class _FormError(Exception):
@@ -46,21 +58,22 @@ class _FormError(Exception):
         self.key = key
 
 
-def gateway_status(health: dict) -> str:
-    """Summarize a gateway health answer for the form (no URLs or secrets)."""
-    owui = health["openwebui"]
-    if not owui.get("reachable"):
-        return "reachable, but it cannot reach Open WebUI right now"
-    version = owui.get("version") or "version unknown"
-    return f"{health['status']}, Open WebUI {version}"
+def gateway_placeholders(status: GatewayStatus) -> dict[str, str]:
+    """Describe a gateway check for the test step (no URL or token)."""
+    health = status.status
+    if status.degraded:
+        health = f"{health}; unavailable: {', '.join(status.degraded)}"
+    return {
+        "version": status.version or "unknown",
+        "status": health,
+        "access": "open mode, no token needed on your network"
+        if status.open_mode
+        else "tokens required, and this token was accepted",
+    }
 
 
 class AgentFlow:
     """Shared configuration-only steps; no protocol or tool execution."""
-
-    # The options flow edits the gateway's SSL/timeout settings on the gateway
-    # step; first setup asks for them on the connection step.
-    _gateway_connection_fields = False
 
     def _initialize(self, data: dict, options: dict) -> None:
         """Set working copies without modifying a saved entry."""
@@ -76,7 +89,7 @@ class AgentFlow:
         self.terminals = []
         self.discovery_errors = {}
         self.loaded = False
-        self.gateway_status: str | None = None
+        self.gateway_status: GatewayStatus | None = None
 
     def _client(self) -> OpenWebUIClient:
         """Reuse Home Assistant's session with the current connection settings."""
@@ -88,45 +101,14 @@ class AgentFlow:
             self.options["verify_ssl"],
         )
 
-    def _gateway_client(self) -> GatewayClient:
-        """Reuse Home Assistant's session with the current gateway settings."""
-        return GatewayClient(
-            self.connection[CONF_GATEWAY_URL],
-            self.connection[CONF_GATEWAY_TOKEN],
-            async_get_clientsession(self.hass),
-            self.options["timeout"],
-            self.options["verify_ssl"],
-        )
-
-    async def _async_check_gateway(self) -> str | None:
-        """Validate the gateway URL and token; return an error key or None."""
+    async def _async_test_gateway(self) -> str | None:
+        """Check health and access with the working settings; an error key or None."""
+        client = create_gateway_client(self.hass, self.connection, self.options)
         try:
-            health = await self._gateway_client().async_health()
+            self.gateway_status = await client.async_check()
         except OpenWebUIError as err:
             return err.key
-        self.gateway_status = gateway_status(health)
         return None
-
-    async def async_step_gateway(self, user_input: dict | None = None):
-        """Gateway mode: timeouts and listening behavior only."""
-        errors = {}
-        if user_input is not None:
-            self.options.update(user_input)
-            if (error := await self._async_check_gateway()) is None:
-                return self._finish()
-            errors["base"] = error
-        elif self.gateway_status is None and (
-            error := await self._async_check_gateway()
-        ):
-            errors["base"] = error
-        return self.async_show_form(
-            step_id="gateway",
-            data_schema=gateway_schema(
-                self.options, connection=self._gateway_connection_fields
-            ),
-            errors=errors,
-            description_placeholders={"status": self.gateway_status or "unknown"},
-        )
 
     async def _discover(self) -> None:
         """Refresh all selectors each time a configuration/options flow opens."""
@@ -223,7 +205,7 @@ class AgentFlow:
 
 
 class OpenWebUIConfigFlow(AgentFlow, config_entries.ConfigFlow, domain=DOMAIN):
-    """Configure the preserved integration domain with native-agent options."""
+    """Configure the gateway (recommended) or the deprecated direct mode."""
 
     VERSION = 2
     MINOR_VERSION = 1
@@ -234,30 +216,84 @@ class OpenWebUIConfigFlow(AgentFlow, config_entries.ConfigFlow, domain=DOMAIN):
         self._reauth_entry = None
 
     async def async_step_user(self, user_input: dict | None = None):
-        """Validate credentials: model discovery, or the gateway's health check."""
+        """Choose the gateway, or Open WebUI directly for one more release."""
+        return self.async_show_menu(step_id="user", menu_options=list(BACKENDS))
+
+    async def async_step_gateway(self, user_input: dict | None = None):
+        """Ask for the gateway's URL, an optional token and the language."""
+        return await self._async_gateway_form("gateway", user_input)
+
+    async def async_step_reconfigure(self, user_input: dict | None = None):
+        """Change the gateway URL, token or language without losing the entry."""
+        entry = self._get_reconfigure_entry()
+        if entry_backend(entry.data) != BACKEND_GATEWAY:
+            return self.async_abort(reason="reconfigure_direct")
+        if user_input is None:
+            self._initialize(dict(entry.data), dict(entry.options))
+        return await self._async_gateway_form("reconfigure", user_input)
+
+    async def _async_gateway_form(self, step_id: str, user_input: dict | None):
+        """Validate the gateway, then show what the test found."""
         errors = {}
         if user_input is not None:
-            backend = (
-                entry_backend(self._reauth_entry.data)
-                if self._reauth_entry
-                else user_input.get(CONF_BACKEND, BACKEND_OPENWEBUI)
-            )
             try:
-                if backend == BACKEND_GATEWAY:
-                    return await self._async_connect_gateway(user_input)
+                url = normalize_url(user_input[CONF_GATEWAY_URL])
+            except ValueError:
+                errors["base"] = "invalid_url"
+            else:
+                self._async_abort_entries_match({CONF_GATEWAY_URL: url})
+                self.connection = {
+                    CONF_BACKEND: BACKEND_GATEWAY,
+                    CONF_GATEWAY_URL: url,
+                    CONF_GATEWAY_TOKEN: user_input.get(CONF_GATEWAY_TOKEN, "").strip(),
+                    CONF_LANGUAGE: user_input[CONF_LANGUAGE],
+                }
+                if (error := await self._async_test_gateway()) is None:
+                    return await self.async_step_test()
+                errors["base"] = error
+        values = {
+            CONF_LANGUAGE: default_language(self.hass.config.language),
+            **self.connection,
+            **(user_input or {}),
+        }
+        return self.async_show_form(
+            step_id=step_id,
+            data_schema=gateway_schema(values),
+            errors=errors,
+            # Translation strings may not contain URLs.
+            description_placeholders={"example": "http://192.168.1.20:8000"},
+        )
+
+    async def async_step_test(self, user_input: dict | None = None):
+        """Show the gateway's version and access mode; submitting saves the entry."""
+        if user_input is None:
+            return self.async_show_form(
+                step_id="test",
+                description_placeholders=gateway_placeholders(self.gateway_status),
+            )
+        if self.source == config_entries.SOURCE_RECONFIGURE:
+            return self.async_update_reload_and_abort(
+                self._get_reconfigure_entry(), data=self.connection
+            )
+        return self.async_create_entry(
+            title=GATEWAY_TITLE,
+            data=self.connection,
+            options={key: GATEWAY_DEFAULT_OPTIONS[key] for key in GATEWAY_OPTIONS},
+        )
+
+    async def async_step_openwebui(self, user_input: dict | None = None):
+        """Connect directly (deprecated): the URL and API key must list a model."""
+        errors = {}
+        if user_input is not None:
+            try:
                 return await self._async_connect_openwebui(user_input)
             except ValueError:
                 errors["base"] = "invalid_url"
             except (OpenWebUIError, _FormError) as err:
                 errors["base"] = err.key
-        values = {**self.options, **self.connection}
-        if CONF_GATEWAY_URL in self.connection:
-            values["base_url"] = self.connection[CONF_GATEWAY_URL]
         return self.async_show_form(
-            step_id="user",
-            data_schema=connection_schema(
-                values, backend_choice=self._reauth_entry is None
-            ),
+            step_id="openwebui",
+            data_schema=connection_schema({**self.options, **self.connection}),
             errors=errors,
         )
 
@@ -269,7 +305,6 @@ class OpenWebUIConfigFlow(AgentFlow, config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def _async_connect_openwebui(self, user_input: dict):
-        """Direct mode: the URL and API key must list at least one model."""
         self.connection = {
             key: user_input[key] for key in ("service_name", "base_url", "api_key")
         }
@@ -290,45 +325,35 @@ class OpenWebUIConfigFlow(AgentFlow, config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="already_configured")
         return await self.async_step_agent()
 
-    async def _async_connect_gateway(self, user_input: dict):
-        """Gateway mode: the URL is the gateway's, the key its API client token."""
-        self.connection = {
-            CONF_BACKEND: BACKEND_GATEWAY,
-            "service_name": user_input["service_name"],
-            CONF_GATEWAY_URL: normalize_url(user_input["base_url"]),
-            CONF_GATEWAY_TOKEN: user_input["api_key"],
-        }
-        self.options.update({key: user_input[key] for key in ("timeout", "verify_ssl")})
-        if error := await self._async_check_gateway():
-            raise _FormError(error)
-        if self._reauth_entry:
-            return self.async_update_reload_and_abort(
-                self._reauth_entry,
-                data_updates=self.connection,
-                options=self._entry_options(),
-            )
-        if self._name_taken():
-            return self.async_abort(reason="already_configured")
-        return await self.async_step_gateway()
-
-    def _entry_options(self) -> dict:
-        """Gateway entries keep only the settings this integration still owns."""
-        if entry_backend(self.connection) == BACKEND_GATEWAY:
-            return {key: self.options[key] for key in GATEWAY_DEFAULT_OPTIONS}
-        return self.options
-
     async def async_step_reauth(self, entry_data: dict):
         """Replace an expired/revoked key or token without deleting the entry."""
         self._reauth_entry = self._get_reauth_entry()
         self._initialize(entry_data, dict(self._reauth_entry.options))
-        return await self.async_step_user()
+        if entry_backend(entry_data) == BACKEND_GATEWAY:
+            return await self.async_step_reauth_confirm()
+        return await self.async_step_openwebui()
+
+    async def async_step_reauth_confirm(self, user_input: dict | None = None):
+        """Ask for a token: the gateway now requires one, or rejected the saved one."""
+        errors = {}
+        if user_input is not None:
+            token = user_input.get(CONF_GATEWAY_TOKEN, "").strip()
+            self.connection[CONF_GATEWAY_TOKEN] = token
+            if (error := await self._async_test_gateway()) is None:
+                return self.async_update_reload_and_abort(
+                    self._reauth_entry, data_updates={CONF_GATEWAY_TOKEN: token}
+                )
+            errors["base"] = error
+        return self.async_show_form(
+            step_id="reauth_confirm", data_schema=token_schema(), errors=errors
+        )
 
     def _finish(self):
         """Save connection data separately from agent options."""
         return self.async_create_entry(
             title=f"{NAME} - {self.connection['service_name']}",
             data=self.connection,
-            options=self._entry_options(),
+            options=self.options,
         )
 
     @staticmethod
@@ -339,19 +364,24 @@ class OpenWebUIConfigFlow(AgentFlow, config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class OpenWebUIOptionsFlow(AgentFlow, config_entries.OptionsFlow):
-    """Edit all agent settings while preserving legacy and unknown options."""
-
-    _gateway_connection_fields = True
+    """Edit settings while preserving legacy and unknown options."""
 
     def __init__(self, entry: config_entries.ConfigEntry) -> None:
         """Copy entry data; never assign the read-only config_entry property."""
         self._initialize(dict(entry.data), dict(entry.options))
 
     async def async_step_init(self, user_input: dict | None = None):
-        """Open the refreshed model and feature settings, or the gateway settings."""
-        if entry_backend(self.connection) == BACKEND_GATEWAY:
-            return await self.async_step_gateway(user_input)
-        return await self.async_step_agent(user_input)
+        """Gateway: turn timeout and voice. Direct: refreshed model and features."""
+        if entry_backend(self.connection) == BACKEND_OPENWEBUI:
+            return await self.async_step_agent(user_input)
+        if user_input is not None:
+            self.options.update(user_input)
+            # A cleared voice field means the gateway's speech profile voice.
+            self.options[CONF_TTS_VOICE] = user_input.get(CONF_TTS_VOICE, "").strip()
+            return self._finish()
+        return self.async_show_form(
+            step_id="init", data_schema=gateway_options_schema(self.options)
+        )
 
     def _finish(self):
         """Persist options and trigger the entry's registered reload listener."""
