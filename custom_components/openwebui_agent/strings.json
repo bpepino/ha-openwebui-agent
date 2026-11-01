@@ -140,12 +140,14 @@
           "completion_timeout": "Turn timeout (seconds)",
           "tts_voice": "Voice",
           "tts_format": "Audio format",
+          "stream_speech": "Speak while the answer streams",
           "fallback_to_home_assistant": "Fall back to Home Assistant when the gateway is unreachable"
         },
         "data_description": {
           "completion_timeout": "How long Home Assistant waits for an answer. The gateway's profile can only shorten it. If it passes after the gateway accepted the request, Home Assistant asks for the answer every 2 seconds for up to this long again, then says it is still working.",
           "tts_voice": "Leave empty for the gateway's speech profile voice.",
-          "tts_format": "The audio container the gateway returns. Home Assistant converts it for your satellites when needed.",
+          "tts_format": "The audio container the gateway returns when the whole answer is spoken at once. Home Assistant converts it for your satellites when needed.",
+          "stream_speech": "On: each sentence is spoken as soon as the gateway sends it, so long answers start sooner (MP3, converted by Home Assistant for your satellite). Off: the whole answer is spoken at once in the audio format above. Turn it off if your satellite plays streamed speech with gaps.",
           "fallback_to_home_assistant": "Off by default. When the gateway cannot be reached, Home Assistant's own Assist agent answers basic commands, after \"Assistant offline, basic commands only.\" It runs them itself, outside the gateway's action policy, so turn this on only if that is wanted."
         },
         "sections": {

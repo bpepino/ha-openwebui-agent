@@ -1,5 +1,10 @@
 """Thin Assist adapter; Open WebUI or the gateway owns context and tools.
 
+Gateway turns are streamed: each sentence goes into Home Assistant's chat log
+as it arrives, so the Assist pipeline can start speaking before the answer
+ends. Whether the satellite listens again is the gateway's decision
+(``continue_conversation``); it is never turned on here.
+
 Gateway mode also shows degraded answers: the gateway's own (its assistant
 upstream is offline and Home Assistant's agent answered there), and, when the
 owner opts in, Home Assistant's agent answering here while the gateway is
@@ -7,10 +12,16 @@ unreachable. Both end listening and are exposed as the entity's ``degraded``
 attribute, an ``openwebui_agent_degraded`` event and in diagnostics.
 """
 
+import asyncio
+from collections.abc import AsyncGenerator
 from typing import Literal
 
 from homeassistant.components import conversation
-from homeassistant.components.conversation.chat_log import AssistantContent, ChatLog
+from homeassistant.components.conversation.chat_log import (
+    AssistantContent,
+    AssistantContentDeltaDict,
+    ChatLog,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import MATCH_ALL
 from homeassistant.core import HomeAssistant, callback
@@ -41,6 +52,7 @@ from .const import (
 )
 from .exceptions import OpenWebUIError
 from .gateway import gateway_device_info
+from .gateway_client import TurnResult
 
 # Spoken before Home Assistant's answer while the gateway is unreachable; the
 # translation key ``gateway_offline`` localizes it.
@@ -75,6 +87,8 @@ class OpenWebUIAgent(conversation.ConversationEntity):
             self._attr_name = None
             self._attr_device_info = gateway_device_info(entry, self.manager)
             self._attr_extra_state_attributes = {ATTR_DEGRADED: False}
+            # Sentences reach the chat log (and early text-to-speech) as they stream.
+            self._attr_supports_streaming = True
             self._fallback = {**GATEWAY_DEFAULT_OPTIONS, **entry.options}[CONF_FALLBACK]
         else:
             self._attr_name = entry.title
@@ -82,12 +96,9 @@ class OpenWebUIAgent(conversation.ConversationEntity):
         self._talk_sessions: set[str] = set()
 
     def _continue_conversation(
-        self,
-        user_input: conversation.ConversationInput,
-        chat_log: ChatLog,
-        expects_reply: bool = False,
+        self, user_input: conversation.ConversationInput, chat_log: ChatLog
     ) -> bool:
-        """Use HA's question detector plus session-scoped voice conversation mode."""
+        """Direct mode: HA's question detector plus session-scoped conversation mode."""
         phrase = (
             user_input.text.casefold().strip().rstrip(".!?;，。？！").replace("’", "'")
         )
@@ -111,7 +122,6 @@ class OpenWebUIAgent(conversation.ConversationEntity):
             self.entry.options.get("conversation_mode", "questions") == "always"
             or conversation_id in self._talk_sessions
             or chat_log.continue_conversation
-            or expects_reply
         )
 
     @property
@@ -135,21 +145,52 @@ class OpenWebUIAgent(conversation.ConversationEntity):
 
     async def _async_gateway_turn(
         self, user_input: conversation.ConversationInput, chat_log: ChatLog
-    ):
-        """Pass what HA knows; the gateway resolves identity, profile and chat."""
+    ) -> tuple[TurnResult, bool]:
+        """Pass what HA knows; the gateway resolves identity, profile and chat.
+
+        Each streamed sentence is added to the chat log as it arrives. HA-side
+        prompts (``extra_system_prompt``, for example from a satellite's
+        ``start_conversation``) are not forwarded: the gateway seeds its own
+        question context. Returns the result and whether sentences streamed.
+        """
         options = {**GATEWAY_DEFAULT_OPTIONS, **self.entry.options}
         device_id, area = self._device_and_area(
             user_input.device_id, getattr(user_input, "satellite_id", None)
         )
-        return await self.manager.async_turn(
-            user_input.text,
-            conversation_id=chat_log.conversation_id,
-            language=user_input.language or self.entry.data.get(CONF_LANGUAGE),
-            device_id=device_id,
-            area=area,
-            extra_instructions=getattr(user_input, "extra_system_prompt", None),
-            timeout_s=options["completion_timeout"],
+        deltas: asyncio.Queue[str | None] = asyncio.Queue()
+        streamed = False
+
+        def on_delta(text: str) -> None:
+            nonlocal streamed
+            streamed = True
+            deltas.put_nowait(text)
+
+        async def stream() -> AsyncGenerator[AssistantContentDeltaDict]:
+            yield {"role": "assistant"}
+            while (text := await deltas.get()) is not None:
+                yield {"content": text}
+
+        turn = asyncio.create_task(
+            self.manager.async_turn(
+                user_input.text,
+                conversation_id=chat_log.conversation_id,
+                language=user_input.language or self.entry.data.get(CONF_LANGUAGE),
+                device_id=device_id,
+                area=area,
+                timeout_s=options["completion_timeout"],
+                on_delta=on_delta,
+            )
         )
+        turn.add_done_callback(lambda _: deltas.put_nowait(None))
+        try:
+            async for _content in chat_log.async_add_delta_content_stream(
+                self.entity_id, stream()
+            ):
+                pass
+            return await turn, streamed
+        finally:
+            if not turn.done():
+                turn.cancel()
 
     async def _async_message(
         self, language: str, key: str, placeholders: dict | None = None
@@ -241,14 +282,17 @@ class OpenWebUIAgent(conversation.ConversationEntity):
     ) -> conversation.ConversationResult:
         """Use HA's managed conversation ID without registering any HA LLM API."""
         response = intent.IntentResponse(language=user_input.language)
-        continue_conversation = False
-        expects_reply = False
-        degraded = False
+        continue_conversation = follow_up = degraded = streamed = False
         try:
             if self._gateway:
-                result = await self._async_gateway_turn(user_input, chat_log)
+                result, streamed = await self._async_gateway_turn(user_input, chat_log)
                 text, speech = result.display_text, result.speech_text
-                expects_reply = result.expects_reply
+                # An older gateway leaves continue_conversation out.
+                follow_up = (
+                    result.expects_reply
+                    if result.continue_conversation is None
+                    else result.continue_conversation
+                )
                 # Home Assistant's agent answered at the gateway: never retried.
                 degraded = result.degraded
             else:
@@ -271,15 +315,19 @@ class OpenWebUIAgent(conversation.ConversationEntity):
                 "strip_markdown", DEFAULT_OPTIONS["strip_markdown"]
             ):
                 text = speech = self._markdown.render(text).strip()
-            chat_log.async_add_assistant_content_without_tools(
-                AssistantContent(agent_id=self.entity_id, content=text)
-            )
+            if not streamed:
+                chat_log.async_add_assistant_content_without_tools(
+                    AssistantContent(agent_id=self.entity_id, content=text)
+                )
             response.async_set_speech(speech)
-            # A degraded answer ends listening: basic commands only.
-            continue_conversation = (
-                self._continue_conversation(user_input, chat_log, expects_reply)
-                and not degraded
-            )
+            if self._gateway:
+                # The gateway decides (its follow-up switch, a question, no
+                # pending confirmation). A degraded answer never listens on.
+                continue_conversation = follow_up and not degraded
+            else:
+                continue_conversation = self._continue_conversation(
+                    user_input, chat_log
+                )
         if self._gateway:
             self._async_record_degraded(
                 DEGRADED_GATEWAY if degraded else None, user_input

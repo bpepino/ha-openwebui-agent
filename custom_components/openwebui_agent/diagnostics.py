@@ -14,6 +14,7 @@ from .const import (
     CONF_GENERIC_STATE_CHANGES,
     CONF_LANGUAGE,
     CONF_PRESENCE,
+    CONF_STREAM_SPEECH,
     DEFAULT_OPTIONS,
     DOMAIN,
     FEATURES,
@@ -47,7 +48,7 @@ async def _async_gateway_diagnostics(hass: HomeAssistant, entry: ConfigEntry) ->
         "completion_timeout": options["completion_timeout"],
         "tts_format": options["tts_format"],
         "tts_voice_configured": bool(options["tts_voice"]),
-        "conversation_mode": options["conversation_mode"],
+        "stream_speech": options[CONF_STREAM_SPEECH],
         "timeout": options["timeout"],
         "verify_ssl": options["verify_ssl"],
         "household_events": {
@@ -65,6 +66,7 @@ async def _async_gateway_diagnostics(hass: HomeAssistant, entry: ConfigEntry) ->
         },
         "mapped_conversation_count": len(client.conversations),
         "last_identity_confidence": client.last_confidence,
+        "last_turn_path": client.last_path,
         "last_turn_timing_ms": client.last_timings,
     }
 

@@ -1,5 +1,26 @@
 # Changelog
 
+## 3.2.0 — unreleased
+
+Follows the gateway's Phase 5 (the direct voice path). Gateway entries only; everything in 3.1 stays.
+
+- **Listening again is the gateway's decision.** The satellite keeps listening without the wake word exactly when the answer's `continue_conversation` is true (falls back to `expects_reply` when a gateway leaves it out), and never after a degraded answer. Home Assistant's own question-mark guess, "let's talk" and the hidden 2.1.0 "always continue" no longer apply to gateway entries, so a pending approval's microphone never collides with the follow-up.
+- **Streamed answers.** Turns ask for `response.stream`. Each `delta` sentence goes into Home Assistant's chat log as it arrives (`ChatLog.async_add_delta_content_stream`); the agent declares streaming support. `final` gives the flags and the full answer; an `error` event, or a stream that breaks after `status` named a `turn_id`, is followed up like the 504. A gateway that answers JSON is read as before.
+- **Streamed speech.** The text-to-speech entity takes streamed text (`async_stream_tts_audio`), cuts it into sentences with the gateway's rule (ported with its tests) and requests each sentence as MP3 as soon as it is complete. New option **Speak while the answer streams** (on); off, every answer is one request in the configured format, which is the fallback the gateway's brief describes.
+- **Questions and approvals** from the gateway (`ask_question`, `start_conversation`) need nothing here; HA-side prompts (`extra_system_prompt`) are no longer forwarded into turns, so the gateway's own question context is the only one.
+- Diagnostics show whether speech streams and the last turn's path.
+
+Checked against Home Assistant 2026.6.0 (the brief's VERIFY items):
+
+- `ChatLog.async_add_delta_content_stream(agent_id, stream)` exists with that name and signature: holds.
+- `TextToSpeechEntity.async_stream_tts_audio(TTSAudioRequest)` with `TTSAudioRequest(language, options, message_gen)` and `TTSAudioResponse(extension, data_gen)`; streaming input is used when `async_supports_streaming_input()` is true: holds.
+- The voice pipeline starts text-to-speech before the agent finishes once more than 60 streamed characters arrived (`STREAM_RESPONSE_CHARS = 60`), and sends ESPHome satellites `tts_start_streaming`: holds. Shorter answers get one text-to-speech request with the final speech.
+- Per-sentence MP3 concatenated through Home Assistant's own ffmpeg conversion (the command `tts` runs, to WAV and FLAC at 16 kHz): all audio decoded, ffmpeg exits 0, about 50 ms of codec padding at each sentence boundary: holds for Home Assistant.
+- A `start_conversation` reply reaches the pipeline's conversation agent with the satellite's `device_id` (and `satellite_id`): holds.
+- Not checkable here: whether Voice PE firmware plays the stream progressively, and how the sentence boundaries sound on it. If either fails, turn **Speak while the answer streams** off.
+
+Validation: 285 tests passed on Linux with Python 3.14 and Home Assistant 2026.6.0 (`pytest-homeassistant-custom-component` 0.13.336): 223 portable tests (streamed turns with and without deltas, error events, broken streams followed up, JSON answers, per-sentence speech, the ported sentence rule) and 62 Home Assistant fixture tests (deltas reaching the chat log and its listener once, the gateway's `continue_conversation` against question marks, `expects_reply` and degraded answers, per-sentence MP3 requested before the rest of the text exists, one request with the option off, no `extra_system_prompt` in turns). The portable tests also passed on Windows with Python 3.12. Ruff lint and format passed. Not run: hassfest, HACS validation, and any test against a live gateway or satellite.
+
 ## 3.1.0 — unreleased
 
 Follows the gateway's Phase 4. Gateway entries only.

@@ -5,7 +5,7 @@ from logging import getLogger
 LOGGER = getLogger(__package__)
 DOMAIN = "openwebui_agent"
 NAME = "Open WebUI Agent"
-VERSION = "3.1.0"
+VERSION = "3.2.0"
 CONF_SERVICE_NAME = "service_name"
 CONF_BASE_URL = "base_url"
 CONF_API_KEY = "api_key"
@@ -31,6 +31,10 @@ CONF_GATEWAY_TOKEN = "gateway_token"
 CONF_LANGUAGE = "language"
 CONF_TTS_VOICE = "tts_voice"
 CONF_TTS_FORMAT = "tts_format"
+# Speak each sentence as soon as the gateway streams it (MP3 per sentence).
+# Off: one text-to-speech call with the whole answer.
+CONF_STREAM_SPEECH = "stream_speech"
+STREAM_FORMAT = "mp3"
 # Off by default: Home Assistant's own agent acts outside the gateway's policy.
 CONF_FALLBACK = "fallback_to_home_assistant"
 # A degraded answer: the gateway's own (assistant upstream offline), or Home
@@ -82,6 +86,7 @@ GATEWAY_OPTIONS = (
     CONF_COMPLETION_TIMEOUT,
     CONF_TTS_VOICE,
     CONF_TTS_FORMAT,
+    CONF_STREAM_SPEECH,
     CONF_FALLBACK,
     *HOUSEHOLD_OPTIONS,
 )
@@ -89,6 +94,7 @@ GATEWAY_DEFAULT_OPTIONS = {
     CONF_COMPLETION_TIMEOUT: 120,
     CONF_TTS_VOICE: "",
     CONF_TTS_FORMAT: "mp3",
+    CONF_STREAM_SPEECH: True,
     CONF_FALLBACK: False,
     CONF_EVENTS: True,
     # Empty: every person exposed to Assist.
@@ -99,7 +105,6 @@ GATEWAY_DEFAULT_OPTIONS = {
     CONF_EVENTS_TOKEN: "",
     CONF_TIMEOUT: 30,
     CONF_VERIFY_SSL: True,
-    CONF_CONVERSATION_MODE: "questions",
 }
 # Languages the gateway's Whisper-based speech recognition understands.
 LANGUAGES = (

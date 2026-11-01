@@ -1,26 +1,37 @@
-"""Text-to-speech through the gateway's OpenAI-compatible speech route."""
+"""Text-to-speech through the gateway's OpenAI-compatible speech route.
 
+With **Speak while the answer streams** on (the default), Home Assistant hands
+the answer over as it streams; each sentence is spoken (MP3) as soon as it is
+complete, and the audio of all sentences is played as one stream. Off, the
+whole answer is spoken in one call in the configured format.
+"""
+
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import Any
 
 from homeassistant.components import tts
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     CONF_LANGUAGE,
+    CONF_STREAM_SPEECH,
     CONF_TTS_FORMAT,
     CONF_TTS_VOICE,
     DOMAIN,
     GATEWAY_DEFAULT_OPTIONS,
     LANGUAGES,
     LOGGER,
+    STREAM_FORMAT,
     TTS_FORMATS,
     default_language,
 )
 from .exceptions import OpenWebUIError
 from .gateway import gateway_device_info
+from .sentences import SentenceSplitter
 
 ATTR_RESPONSE_FORMAT = "response_format"
 
@@ -54,6 +65,46 @@ class GatewayTextToSpeech(tts.TextToSpeechEntity):
         self._attr_default_options = {ATTR_RESPONSE_FORMAT: options[CONF_TTS_FORMAT]}
         if options[CONF_TTS_VOICE]:
             self._attr_default_options[tts.ATTR_VOICE] = options[CONF_TTS_VOICE]
+        self._stream_speech = options[CONF_STREAM_SPEECH]
+
+    @callback
+    def async_supports_streaming_input(self) -> bool:
+        """Take streamed text unless the owner turned it off."""
+        return self._stream_speech
+
+    async def async_stream_tts_audio(
+        self, request: tts.TTSAudioRequest
+    ) -> tts.TTSAudioResponse:
+        """Speak each sentence as soon as the streamed text completes it."""
+        voice = request.options.get(tts.ATTR_VOICE)
+
+        async def sentences() -> AsyncGenerator[str]:
+            splitter = SentenceSplitter()
+            async for text in request.message_gen:
+                for sentence in splitter.feed(text):
+                    yield sentence
+            for sentence in splitter.flush():
+                yield sentence
+
+        async def audio() -> AsyncGenerator[bytes]:
+            async with aclosing(sentences()) as texts:
+                async for sentence in texts:
+                    try:
+                        async with aclosing(
+                            self.client.async_speech_stream(
+                                sentence, voice=voice, response_format=STREAM_FORMAT
+                            )
+                        ) as chunks:
+                            async for chunk in chunks:
+                                yield chunk
+                    except OpenWebUIError as err:
+                        LOGGER.warning("Gateway text-to-speech failed: %s", err.key)
+                        raise HomeAssistantError(
+                            f"The AI gateway could not synthesize speech ({err.key})"
+                        ) from err
+
+        # Per-sentence MP3 files concatenate into one playable MP3 stream.
+        return tts.TTSAudioResponse(TTS_FORMATS[STREAM_FORMAT], audio())
 
     async def async_get_tts_audio(
         self, message: str, language: str, options: dict[str, Any]

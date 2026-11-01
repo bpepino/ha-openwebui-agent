@@ -1,6 +1,6 @@
 # Manual acceptance tests
 
-## Gateway mode (3.1.0)
+## Gateway mode (3.2.0)
 
 These need a running AI gateway on your LAN and an Assist satellite (or the Assist dialog with a microphone). They have not been run against a live gateway as part of the 3.x changes; the automated tests simulate the gateway at the HTTP layer. Record the integration, Home Assistant and gateway versions with your results.
 
@@ -19,6 +19,10 @@ These need a running AI gateway on your LAN and an Assist satellite (or the Assi
 13. **Open mode from health.** With a gateway that reports `open_mode` in `GET /health`, the test step must say "open mode" or "tokens required" accordingly, and diagnostics must show `token_needed`.
 14. **Degraded answer at the gateway.** Turn on the gateway's degraded mode and stop its Open WebUI. Ask a satellite "turn on the office light": you must hear "Assistant offline, basic commands only." and the light must change; the satellite must not keep listening. The conversation entity's `degraded` attribute must be `true`, an `openwebui_agent_degraded` event with `source: gateway` must appear (Developer tools → Events), and diagnostics must count one degraded answer. The next normal answer sets the attribute back to `false`.
 15. **Fallback here.** Stop the gateway. With **Fall back to Home Assistant when the gateway is unreachable** off you hear "I can't reach the assistant gateway right now." Turn it on and ask again: you must hear "Assistant offline, basic commands only." followed by Home Assistant's own answer, and an event with `source: home_assistant`. A wrong token (401) or a slow turn (still working) must never fall back.
+16. **Streamed answer.** Ask a Voice PE something with a long answer (more than one sentence). The Assist dialog's debug view must show `tts_start_streaming`, the gateway's log one speech request per sentence, and the satellite must start speaking before the answer is complete. Listen for gaps or cuts between sentences. If playback waits for the whole answer or has gaps, turn **Speak while the answer streams** off and check that the whole answer is spoken in one request.
+17. **Listening again.** Ask something the agent answers with a question: the satellite must listen without the wake word. Answer with a statement: it must not. With the gateway's follow-up switch off, it must never listen again, even after a question.
+18. **Approval.** Ask for an action that needs approval: the satellite must ask the question (for example "Close Kitchen blinds?") after the answer, without its follow-up microphone opening first. Answer "yes": the action runs; "no" or silence: it does not.
+19. **Gateway question.** With the gateway's proactive questions on, let it ask on a satellite (`start_conversation`). Answer it: the gateway's log must show the turn with that satellite's `device_id` and no `extra_instructions`.
 
 ## Direct Open WebUI mode (deprecated)
 

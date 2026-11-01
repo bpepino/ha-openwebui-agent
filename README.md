@@ -12,7 +12,7 @@ In the other direction it gives the gateway what its household reviews need: a r
 
 **Nothing else is needed in Home Assistant.** No OpenAI STT/TTS integrations, no extra components or add-ons, no API keys of Open WebUI. Everything stays on your network; there is no cloud service.
 
-**Version 3.1.0.** This is an independent community project, not an official Home Assistant or Open WebUI integration. The old direct Open WebUI mode still works but is [deprecated](#direct-open-webui-mode-deprecated).
+**Version 3.2.0.** This is an independent community project, not an official Home Assistant or Open WebUI integration. The old direct Open WebUI mode still works but is [deprecated](#direct-open-webui-mode-deprecated).
 
 ## Setup in three steps
 
@@ -43,13 +43,14 @@ To change the URL, token or language later, use **Reconfigure** on the integrati
 
 ## Options
 
-**Configure** on the integration entry has four settings, plus a collapsed **Household events** section:
+**Configure** on the integration entry has five settings, plus a collapsed **Household events** section:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | Turn timeout | 120 seconds | How long Home Assistant waits for an answer. Sent as `timeout_s`; the gateway's profile can only shorten it. If it passes after the gateway accepted the request, Home Assistant asks for the answer for up to this long again. |
 | Voice | empty | Text-to-speech voice. Empty uses the gateway's speech profile voice. |
-| Audio format | MP3 | The container the gateway returns: MP3, WAV or Opus (Ogg). Home Assistant converts it for your satellites when they need another format. |
+| Audio format | MP3 | The container the gateway returns when the whole answer is spoken at once: MP3, WAV or Opus (Ogg). Home Assistant converts it for your satellites when they need another format. |
+| Speak while the answer streams | on | Speak each sentence as soon as the gateway sends it, so long answers start sooner (MP3, converted for your satellite). Off: the whole answer is spoken at once in the audio format above. Turn it off if your satellite plays streamed speech with gaps. |
 | Fall back to Home Assistant when the gateway is unreachable | off | Let Home Assistant's own Assist agent answer basic commands while the gateway cannot be reached. See [Degraded mode](#degraded-mode). |
 | Household events → Send events to the gateway | on | Push the [household events](#household-events) below. |
 | Household events → Persons | empty | Whose arrivals and departures are sent, also when not exposed to Assist. Empty: every person exposed to Assist. |
@@ -77,7 +78,7 @@ The recording is uploaded as a WAV file (OpenAI multipart: `file`, `model`, `lan
 
 ### Conversation
 
-Home Assistant sends the text, its conversation ID, the language, the satellite's device ID, the device's area name, any `extra_system_prompt` (for example from `assist_satellite.start_conversation`) and the turn timeout:
+Home Assistant sends the text, its conversation ID, the language, the satellite's device ID, the device's area name and the turn timeout, and asks for a streamed answer:
 
 ```json
 {
@@ -86,22 +87,26 @@ Home Assistant sends the text, its conversation ID, the language, the satellite'
   "language": "en",
   "device_id": "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d",
   "area": "Office",
-  "extra_instructions": "Keep it short.",
   "timeout_s": 120,
-  "response": {"speech": false, "stream": false}
+  "response": {"speech": false, "stream": true}
 }
 ```
 
-Fields without a value are left out. When Assist names only the satellite entity, its device and area come from the entity, device and area registries.
+Fields without a value are left out. When Assist names only the satellite entity, its device and area come from the entity, device and area registries. Prompts from Home Assistant's side (`extra_system_prompt`, for example from `assist_satellite.start_conversation`) are not forwarded: the gateway sets the context of its own questions.
+
+The gateway answers with server-sent events: `status`, one `delta` per finished sentence (its direct path; the Open WebUI path sends none), then `final` with the whole answer, or `error`. Each `delta` goes into Home Assistant's chat log as it arrives, so the Assist dialog shows the answer growing and the voice pipeline can start speaking it. A gateway that answers plain JSON is read as before.
 
 - **Long turns.** When the turn timeout passes after the gateway accepted the request, the gateway answers `504` with `still_running: true` and a `turn_id`, and keeps waiting. Home Assistant then asks `GET /assistant/v1/turns/{turn_id}` every 2 seconds for up to the turn timeout. A finished turn is spoken as usual; a failed one speaks its error. If the turn is unknown or expired (404), the follow-up fails, or the time runs out, you hear "I'm still working on that": the request may still finish and act, so don't repeat it. The request itself is never sent twice.
 - **Follow-ups.** Home Assistant's conversation ID maps to the gateway conversation the reply names. When the gateway starts a new chat (`new_chat`), the mapping is replaced. Mappings are kept in memory for the 256 most recent conversations.
-- **Listening again.** When the gateway answers `expects_reply: true` (the answer asks a question), the satellite keeps listening. Say **"let's talk"** to keep listening after statements for the current session, and **"end conversation"**, "stop talking" or "that's all" to stop.
-- **Speech and display.** Assist speaks the gateway's TTS-ready `speech_text` and shows `display_text` in the chat.
+- **Listening again.** The gateway decides whether the satellite listens again without the wake word: `continue_conversation` in its answer (its follow-up switch is on, the answer asks a question, no confirmation is pending, and the answer is not degraded). Home Assistant never turns it on by itself; a gateway that does not send the field falls back to `expects_reply`. A follow-up is an ordinary new turn with the same conversation, device and area; the gateway identifies the speaker again.
+- **Speech and display.** Assist speaks the gateway's TTS-ready text: the streamed sentences, or `speech_text` for a short or unstreamed answer. The chat shows the streamed sentences, or `display_text`.
+- **Questions and approvals.** For an action that needs your approval, or a question of its own, the gateway asks through the satellite itself (`assist_satellite.ask_question` or `start_conversation`, over its own connection to Home Assistant). The satellite needs the start-conversation feature. Your reply to a started conversation comes back to this agent as an ordinary turn with the satellite's device. Nothing needs to be set up here.
 
 ### Text-to-speech
 
-Home Assistant sends `{model, input, voice, response_format}` to `/v1/audio/speech` with your configured voice and format and plays the returned audio. The gateway translates from English into its speech profile's language when needed.
+Home Assistant sends `{model, input, voice, response_format}` to `/v1/audio/speech` with your configured voice and plays the returned audio. The gateway translates from English into its speech profile's language when needed.
+
+With **Speak while the answer streams** on, the text is cut into sentences with the gateway's own rule (after `.` `!` `?` `;` `…` or a paragraph break; never inside `3.5` or `7:30`; the first piece may end at a comma after 40 characters; at most 220 characters) and each sentence is requested as MP3 as soon as it is complete. The sentences play as one stream. Home Assistant's voice pipeline hands an answer over this way once more than 60 characters have streamed; shorter answers are spoken in one go. With the option off, every answer is one request in the configured format.
 
 ## Degraded mode
 
@@ -156,7 +161,7 @@ Every gateway error code maps to a translated message. A code newer than this ve
 
 ## Diagnostics and logs
 
-**Download diagnostics** on the integration entry shows a live gateway check (status, version, open mode and whether a token is needed, unavailable subsystems, the gateway's degraded mode), whether a token is configured, the degraded answers (the last one's source and a count) and whether the fallback is on, the language and options, the household event counts (sent, failed, rate limited, filtered, queued) and whether an events token is set, the number of mapped conversations, the last turn's timings and its identity confidence. It never contains the URL or a token.
+**Download diagnostics** on the integration entry shows whether speech streams, the path of the last turn (`direct` or `openwebui`), a live gateway check (status, version, open mode and whether a token is needed, unavailable subsystems, the gateway's degraded mode), whether a token is configured, the degraded answers (the last one's source and a count) and whether the fallback is on, the language and options, the household event counts (sent, failed, rate limited, filtered, queued) and whether an events token is set, the number of mapped conversations, the last turn's timings and its identity confidence. It never contains the URL or a token.
 
 For debug logs:
 
@@ -176,6 +181,7 @@ Logs never contain prompts, transcripts, answers or the token.
 | "The gateway requires a token" | The gateway's **Require tokens** setting is on. Create an API client of kind `ha` and paste its token, or turn the setting off. |
 | Setup keeps retrying | The gateway is unreachable from Home Assistant. Check the host, port and firewall. |
 | The satellite says nothing or plays silence | Check the gateway's speech engines in its dashboard. The gateway answers silence for short command acknowledgements on purpose. |
+| Spoken answers have gaps or start only at the end | Turn **Speak while the answer streams** off in **Configure**: the whole answer is then spoken at once. |
 | Speech is recognized but the wrong person is greeted | The gateway matches the transcript to the speaker it identified. Two satellites hearing the same sentence at once can swap speakers. |
 | "I'm still working on that" often | Raise the turn timeout in **Configure**, and check the gateway profile's completion timeout. |
 | The gateway sees no entities | Expose them to Assist. The gateway needs a Home Assistant token to read `/api/oikos`. |
@@ -187,7 +193,7 @@ Keep the gateway on your LAN. In open mode anyone on your network can use it as 
 
 ## Updating from 2.x
 
-- **2.1.0 gateway entries** keep working. After the update they also get the speech-to-text and text-to-speech entities; select them in your Assist pipeline and remove any separate OpenAI speech integrations that pointed at the gateway. Settings that 2.1.0 showed (SSL verification, request timeout, Continue listening, Strip Markdown) keep their saved values but are no longer shown.
+- **2.1.0 gateway entries** keep working. After the update they also get the speech-to-text and text-to-speech entities; select them in your Assist pipeline and remove any separate OpenAI speech integrations that pointed at the gateway. Settings that 2.1.0 showed are no longer shown: SSL verification and the request timeout keep their saved values; Continue listening and Strip Markdown no longer apply, because the gateway decides when to listen again and sends plain text.
 - **Direct Open WebUI entries** keep working. Home Assistant shows a repair notice for each one. To move: add the integration again and choose **AI gateway**, select the new entities in your Assist pipeline, then delete the direct entry.
 
 ## Direct Open WebUI mode (deprecated)

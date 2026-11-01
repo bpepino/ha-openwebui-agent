@@ -101,6 +101,8 @@ class Gateway:
     def __init__(self) -> None:
         self.requests: list[dict] = []
         self.turn_reply: tuple[int, object] = (200, REPLY)
+        # Server-sent events answered instead of turn_reply (a streamed turn).
+        self.turn_events: list[tuple[str, dict]] | None = None
         self.polls: list[tuple[int, object]] = []
         self.health_reply: tuple[int, object] = (200, HEALTH)
         self.probe_reply: tuple[int, object] | None = None
@@ -139,6 +141,12 @@ class Gateway:
         self.record(request, json.loads(request.content))
         if self.hold:
             await self.release.wait()
+        if self.turn_events is not None:
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/event-stream"},
+                content=sse(self.turn_events),
+            )
         return self.respond(self.turn_reply)
 
     def poll(self, request: httpx.Request) -> httpx.Response:
@@ -171,9 +179,19 @@ class Gateway:
 
     def speech(self, request: httpx.Request) -> httpx.Response:
         self.record(request, json.loads(request.content))
+        if isinstance(self.speech_reply, tuple):
+            return self.respond(self.speech_reply)
         return httpx.Response(
             200, content=self.speech_reply, headers={"Content-Type": "audio/mpeg"}
         )
+
+
+def sse(events: list[tuple[str, dict]]) -> bytes:
+    """Encode events like the gateway (``event:``, one JSON ``data:`` line)."""
+    return "".join(
+        f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+        for event, data in events
+    ).encode()
 
 
 @pytest.fixture
@@ -867,6 +885,201 @@ async def test_close_cancels_waiting_turn(client, gateway):
     with pytest.raises(GatewayUnreachable):
         await client.async_turn("Hi")
     assert len(gateway.requests) == 1
+
+
+FINAL = {
+    **REPLY,
+    "display_text": "It is sunny. Twenty degrees. Anything else?",
+    "speech_text": "It is sunny. Twenty degrees. Anything else?",
+    "continue_conversation": True,
+    "path": "direct",
+    "turn_id": "t-9",
+}
+ACCEPTED = (
+    "status",
+    {
+        "phase": "accepted",
+        "conversation_id": "gw-9",
+        "turn_id": "t-9",
+        "path": "direct",
+    },
+)
+
+
+async def test_streamed_turn(client, gateway):
+    """Each delta is passed on as it arrives; final is the result."""
+    gateway.turn_events = [
+        ACCEPTED,
+        (
+            "delta",
+            {
+                "conversation_id": "gw-9",
+                "turn_id": "t-9",
+                "index": 0,
+                "text": "It is sunny. ",
+            },
+        ),
+        (
+            "delta",
+            {
+                "conversation_id": "gw-9",
+                "turn_id": "t-9",
+                "index": 1,
+                "text": "Twenty degrees. ",
+            },
+        ),
+        ("final", FINAL),
+    ]
+    deltas: list[str] = []
+    result = await client.async_turn(
+        "What's the weather?", conversation_id=CONVERSATION, on_delta=deltas.append
+    )
+    assert deltas == ["It is sunny. ", "Twenty degrees. "]
+    assert result.display_text == FINAL["display_text"]
+    assert result.continue_conversation is True and result.path == "direct"
+    assert client.last_path == "direct"
+    request = gateway.requests[-1]
+    assert request["body"]["response"] == {"speech": False, "stream": True}
+    assert request["headers"]["Accept"].startswith("text/event-stream")
+    assert request["headers"]["Authorization"] == f"Bearer {TOKEN}"
+
+
+async def test_streamed_turn_without_deltas(client, gateway):
+    """The Open WebUI path streams only status events, then final."""
+    gateway.turn_events = [
+        ("status", {"phase": "accepted", "conversation_id": "gw-9"}),
+        ("status", {"phase": "waiting", "conversation_id": "gw-9", "elapsed_ms": 2000}),
+        ("final", {**REPLY, "path": "openwebui", "continue_conversation": False}),
+    ]
+    deltas: list[str] = []
+    result = await client.async_turn(
+        "Hi", conversation_id="c-1", on_delta=deltas.append
+    )
+    assert deltas == []
+    assert result.path == "openwebui" and result.continue_conversation is False
+
+
+async def test_streamed_turn_still_running_is_followed_up(
+    client, gateway, fast_polling
+):
+    """An error event with still_running and a turn_id is polled like the 504."""
+    gateway.turn_events = [
+        ACCEPTED,
+        ("delta", {"index": 0, "text": "Working on it. "}),
+        (
+            "error",
+            {
+                "error": {
+                    "code": "timeout",
+                    "message": "Still working.",
+                    "still_running": True,
+                    "turn_id": "t-9",
+                    "conversation_id": "gw-9",
+                }
+            },
+        ),
+    ]
+    gateway.polls = [RUNNING, (200, {"status": "done", "result": FINAL})]
+    deltas: list[str] = []
+    result = await client.async_turn(
+        "Hi", conversation_id="c-1", on_delta=deltas.append
+    )
+    assert deltas == ["Working on it. "]
+    assert result.display_text == FINAL["display_text"]
+    assert [r["path"] for r in gateway.requests] == [
+        "/assistant/v1/turns",
+        "/assistant/v1/turns/t-9",
+        "/assistant/v1/turns/t-9",
+    ]
+
+
+async def test_streamed_turn_error_event(client, gateway):
+    """An error event raises the gateway's error."""
+    gateway.turn_events = [
+        ACCEPTED,
+        ("error", {"error": {"code": "agent_failed", "message": "No answer."}}),
+    ]
+    with pytest.raises(AgentFailedError) as caught:
+        await client.async_turn("Hi", conversation_id="c-1", on_delta=[].append)
+    assert caught.value.server_message == "No answer."
+    assert caught.value.unreachable is False
+    gateway.turn_events = [("error", {"error": {"code": "brand_new", "message": "x"}})]
+    with pytest.raises(GatewayError):
+        await client.async_turn("Hi", conversation_id="c-1", on_delta=[].append)
+
+
+async def test_stream_that_ends_without_an_answer(client, gateway, fast_polling):
+    """It may still act: followed up with its turn_id, else still running."""
+    gateway.turn_events = [ACCEPTED, ("delta", {"text": "Half. "})]
+    gateway.polls = [(200, {"status": "done", "result": FINAL})]
+    result = await client.async_turn("Hi", conversation_id="c-1", on_delta=[].append)
+    assert result.display_text == FINAL["display_text"]
+    gateway.turn_events = [("status", {"phase": "accepted"})]
+    with pytest.raises(TurnStillRunning) as caught:
+        await client.async_turn("Hi", conversation_id="c-1", on_delta=[].append)
+    assert caught.value.turn_id is None
+    assert [r["path"] for r in gateway.requests].count("/assistant/v1/turns") == 2
+
+
+async def test_stream_request_answered_like_before(client, gateway):
+    """A gateway that answers JSON, or an error status, is read as before."""
+    deltas: list[str] = []
+    result = await client.async_turn(
+        "Hi", conversation_id="c-1", on_delta=deltas.append
+    )
+    assert result.display_text == REPLY["display_text"] and deltas == []
+    # REPLY has no continue_conversation: an older gateway.
+    assert result.continue_conversation is None and result.path is None
+    gateway.turn_reply = (401, UNAUTHORIZED)
+    with pytest.raises(GatewayUnauthorized):
+        await client.async_turn("Hi", conversation_id="c-1", on_delta=deltas.append)
+    gateway.turn_reply = (502, "<html>Bad Gateway</html>")
+    with pytest.raises(GatewayUnreachable) as caught:
+        await client.async_turn("Hi", conversation_id="c-1", on_delta=deltas.append)
+    assert caught.value.unreachable is True
+    gateway.down = True
+    with pytest.raises(GatewayUnreachable) as caught:
+        await client.async_turn("Hi", conversation_id="c-1", on_delta=deltas.append)
+    assert caught.value.unreachable is True
+
+
+async def test_continue_conversation_is_read_as_sent(client, gateway):
+    """Only a boolean counts; anything else means the gateway did not say."""
+    gateway.turn_reply = (200, {**REPLY, "continue_conversation": False})
+    assert (await client.async_turn("Hi")).continue_conversation is False
+    gateway.turn_reply = (200, {**REPLY, "continue_conversation": "yes"})
+    assert (await client.async_turn("Hi")).continue_conversation is None
+
+
+async def test_speech_stream(client, gateway):
+    """One sentence per request; the audio is yielded as it arrives."""
+    audio = b"".join(
+        [
+            chunk
+            async for chunk in client.async_speech_stream(
+                "It is sunny.", voice="maria", response_format="mp3"
+            )
+        ]
+    )
+    assert audio == b"ID3-fake-mp3"
+    assert gateway.requests[-1]["body"] == {
+        "model": "tts-1",
+        "input": "It is sunny.",
+        "response_format": "mp3",
+        "voice": "maria",
+    }
+    gateway.speech_reply = b""
+    with pytest.raises(GatewayError):
+        async for _ in client.async_speech_stream(
+            "x", voice=None, response_format="mp3"
+        ):
+            pass
+    gateway.speech_reply = (503, "Service Unavailable")
+    with pytest.raises(GatewayUnreachable):
+        async for _ in client.async_speech_stream(
+            "x", voice=None, response_format="mp3"
+        ):
+            pass
 
 
 def test_translations_cover_gateway_keys():

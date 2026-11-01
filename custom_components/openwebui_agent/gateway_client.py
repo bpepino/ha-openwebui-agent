@@ -12,14 +12,21 @@ none, so the ``Authorization`` header is sent only when a token is configured.
 No retries: an accepted turn may act on the real world. A turn whose
 deadline passed after the gateway accepted it (504 ``still_running`` with a
 ``turn_id``) is followed up at ``GET /assistant/v1/turns/{turn_id}``.
+
+Streamed turns (``response.stream``) answer server-sent events: ``status``,
+one ``delta`` per finished sentence (the gateway's direct path only), then one
+``final`` (the full answer) or ``error`` (the error envelope).
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
+from collections.abc import AsyncIterator, Callable
+from contextlib import aclosing
 from dataclasses import dataclass, field
 import hashlib
+import json
 import re
 from time import monotonic
 from typing import Any
@@ -126,6 +133,10 @@ class TurnResult:
     new_chat: bool = False
     # The gateway answered in degraded mode: Home Assistant's own agent spoke.
     degraded: bool = False
+    # Listen again without the wake word; None when the gateway does not say.
+    continue_conversation: bool | None = None
+    # How the gateway answered: "direct" or "openwebui" (informational).
+    path: str | None = None
     confidence: str | None = None
     timings: dict[str, float] = field(default_factory=dict)
 
@@ -178,6 +189,7 @@ def build_turn_body(
     area: str | None = None,
     extra_instructions: str | None = None,
     timeout_s: float | None = None,
+    stream: bool = False,
 ) -> dict[str, Any]:
     """Build a ``POST /turns`` body with only the fields the gateway accepts.
 
@@ -198,7 +210,7 @@ def build_turn_body(
         "timeout_s": min(timeout_s, MAX_TIMEOUT_S) if timeout_s else None,
     }
     body = {key: value for key, value in fields.items() if value is not None}
-    body["response"] = {"speech": False, "stream": False}
+    body["response"] = {"speech": False, "stream": stream}
     return body
 
 
@@ -328,6 +340,8 @@ def _turn_result(data: dict[str, Any], sent_id: str | None) -> TurnResult:
     identity = data.get("identity")
     confidence = identity.get("confidence") if isinstance(identity, dict) else None
     timings = data.get("timings")
+    follow_up = data.get("continue_conversation")
+    path = data.get("path")
     return TurnResult(
         display_text=display,
         speech_text=speech,
@@ -337,6 +351,8 @@ def _turn_result(data: dict[str, Any], sent_id: str | None) -> TurnResult:
         else sent_id,
         new_chat=data.get("new_chat") is True,
         degraded=data.get("degraded") is True,
+        continue_conversation=follow_up if isinstance(follow_up, bool) else None,
+        path=path if isinstance(path, str) else None,
         confidence=confidence if isinstance(confidence, str) else None,
         timings={
             key: value
@@ -346,10 +362,39 @@ def _turn_result(data: dict[str, Any], sent_id: str | None) -> TurnResult:
     )
 
 
-def _still_running(conversation_id: str | None, reason: str) -> TurnStillRunning:
+def _still_running(
+    conversation_id: str | None, reason: str, turn_id: str | None = None
+) -> TurnStillRunning:
     err = TurnStillRunning(reason)
     err.conversation_id = conversation_id
+    err.turn_id = turn_id
     return err
+
+
+def _unreachable(reason: str) -> GatewayUnreachable:
+    err = GatewayUnreachable(reason)
+    err.unreachable = True
+    return err
+
+
+async def _sse_events(lines: AsyncIterator[str]) -> AsyncIterator[tuple[str, Any]]:
+    """Parse server-sent events into ``(event, JSON data)`` pairs."""
+    event, data = "message", []
+    async for line in lines:
+        if not line:
+            if data:
+                try:
+                    yield event, json.loads("\n".join(data))
+                except ValueError:
+                    LOGGER.debug("Gateway sent an event without JSON data: %s", event)
+            event, data = "message", []
+        elif not line.startswith(":"):
+            name, _, value = line.partition(":")
+            value = value.removeprefix(" ")
+            if name == "event":
+                event = value
+            elif name == "data":
+                data.append(value)
 
 
 class GatewayClient:
@@ -370,6 +415,7 @@ class GatewayClient:
         self.last_status: GatewayStatus | None = None
         self.last_timings: dict[str, float] | None = None
         self.last_confidence: str | None = None
+        self.last_path: str | None = None
         # The source of the last answer when it was degraded ("gateway" or
         # "home_assistant"), else None; and how many were (diagnostics).
         self.last_degraded: str | None = None
@@ -416,9 +462,7 @@ class GatewayClient:
                     **kwargs,
                 )
         except (httpx.ConnectError, httpx.ConnectTimeout):
-            err = GatewayUnreachable("Gateway connection failed")
-            err.unreachable = True
-            raise err from None
+            raise _unreachable("Gateway connection failed") from None
         except (TimeoutError, httpx.HTTPError):
             if submitted:
                 # The turn left Home Assistant and may be running: never "retry".
@@ -501,8 +545,13 @@ class GatewayClient:
         area: str | None = None,
         extra_instructions: str | None = None,
         timeout_s: float | None = None,
+        on_delta: Callable[[str], None] | None = None,
     ) -> TurnResult:
-        """Run one turn for HA's ``conversation_id``; follow it up after a 504."""
+        """Run one turn for HA's ``conversation_id``; follow it up after a 504.
+
+        With ``on_delta`` the turn is streamed and each finished sentence is
+        passed to it as it arrives; the result is the gateway's ``final``.
+        """
         if self._closed:
             raise GatewayUnreachable("Integration is unloading")
         body = build_turn_body(
@@ -514,6 +563,7 @@ class GatewayClient:
             area=area,
             extra_instructions=extra_instructions,
             timeout_s=timeout_s,
+            stream=on_delta is not None,
         )
         LOGGER.debug(
             "Gateway turn: device=%s area=%s token=%s",
@@ -530,9 +580,13 @@ class GatewayClient:
             try:
                 # The gateway enforces timeout_s itself; allow transport slack
                 # so its own 504 still_running answer arrives first.
-                data = await self._async_turn_reply(
-                    "POST", TURNS_PATH, sent_id, turn_timeout + self.timeout, json=body
-                )
+                total = turn_timeout + self.timeout
+                if on_delta is None:
+                    data = await self._async_turn_reply(
+                        "POST", TURNS_PATH, sent_id, total, json=body
+                    )
+                else:
+                    data = await self._async_stream_turn(body, sent_id, total, on_delta)
             except TurnStillRunning as err:
                 if not err.turn_id:
                     raise
@@ -550,10 +604,12 @@ class GatewayClient:
             self._remember(conversation_id, result)
         self.last_timings = result.timings
         self.last_confidence = result.confidence
+        self.last_path = result.path
         LOGGER.debug(
-            "Gateway turn done: new_chat=%s expects_reply=%s confidence=%s timings=%s",
+            "Gateway turn done: path=%s new_chat=%s continue=%s confidence=%s timings=%s",
+            result.path,
             result.new_chat,
-            result.expects_reply,
+            result.continue_conversation,
             result.confidence,
             result.timings,
         )
@@ -574,6 +630,88 @@ class GatewayClient:
         if not isinstance(data, dict):
             raise NotGatewayError("Turn reply is not a JSON object")
         return data
+
+    async def _async_stream_turn(
+        self,
+        body: dict[str, Any],
+        sent_id: str | None,
+        total: float,
+        on_delta: Callable[[str], None],
+    ) -> dict[str, Any]:
+        """POST a streamed turn: pass each ``delta`` on and return ``final``.
+
+        ``error`` raises like an error answer (a ``still_running`` one carries
+        the ``turn_id``). A stream that breaks or ends without either belonged
+        to a submitted turn that may still act: it is still running, with the
+        ``turn_id`` its ``status`` event named. A gateway that answers JSON
+        instead of events is read like an unstreamed turn.
+
+        The gateway ends the stream right after ``final`` or ``error``; it is
+        read to its end so no reader is left suspended.
+        """
+        turn_id: str | None = None
+        final: dict[str, Any] | None = None
+        error: OpenWebUIError | None = None
+        try:
+            async with (
+                asyncio.timeout(total),
+                self._http.stream(
+                    "POST",
+                    f"{self.base_url}{TURNS_PATH}",
+                    headers=self._headers("text/event-stream, application/json"),
+                    json=body,
+                    timeout=httpx.Timeout(total, connect=min(total, self.timeout)),
+                    follow_redirects=False,
+                ) as response,
+            ):
+                if response.status_code != 200 or not response.headers.get(
+                    "content-type", ""
+                ).startswith("text/event-stream"):
+                    await response.aread()
+                    data = _json(response)
+                    if response.status_code != 200:
+                        raise error_from_response(
+                            response.status_code,
+                            data,
+                            submitted=True,
+                            conversation_id=sent_id,
+                        )
+                    if not isinstance(data, dict):
+                        raise NotGatewayError("Turn reply is not a JSON object")
+                    return data
+                async with (
+                    aclosing(response.aiter_lines()) as lines,
+                    aclosing(_sse_events(lines)) as events,
+                ):
+                    async for event, data in events:
+                        if not isinstance(data, dict):
+                            continue
+                        if event == "status":
+                            turn_id = data.get("turn_id") or turn_id
+                            if isinstance(data.get("conversation_id"), str):
+                                sent_id = data["conversation_id"] or sent_id
+                        elif event == "delta":
+                            if isinstance(text := data.get("text"), str) and text:
+                                on_delta(text)
+                        elif event == "final" and final is None and error is None:
+                            final = data
+                        elif event == "error" and final is None and error is None:
+                            error = error_from_response(
+                                500, data, submitted=True, conversation_id=sent_id
+                            )
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            raise _unreachable("Gateway connection failed") from None
+        except (TimeoutError, httpx.HTTPError):
+            LOGGER.debug("Gateway turn stream broke after submission")
+        if error is not None:
+            raise error
+        if final is not None:
+            return final
+        raise _still_running(
+            sent_id,
+            "Turn stream ended without an answer",
+            turn_id if isinstance(turn_id, str) else None,
+        )
 
     async def _async_poll(
         self, turn_id: str, sent_id: str | None, deadline: float
@@ -654,6 +792,37 @@ class GatewayClient:
         if not response.content:
             raise GatewayError("The gateway returned no audio")
         return response.content
+
+    async def async_speech_stream(
+        self, text: str, *, voice: str | None, response_format: str
+    ) -> AsyncIterator[bytes]:
+        """``POST /v1/audio/speech`` and yield the audio as it arrives."""
+        body = {"model": TTS_MODEL, "input": text, "response_format": response_format}
+        if voice:
+            body["voice"] = voice
+        received = False
+        try:
+            async with self._http.stream(
+                "POST",
+                f"{self.base_url}{SPEECH_PATH}",
+                headers=self._headers("audio/*"),
+                json=body,
+                timeout=httpx.Timeout(VOICE_TIMEOUT_S, connect=self.timeout),
+                follow_redirects=False,
+            ) as response:
+                if response.status_code != 200:
+                    await response.aread()
+                    raise error_from_response(response.status_code, _json(response))
+                async with aclosing(response.aiter_bytes()) as chunks:
+                    async for chunk in chunks:
+                        received = received or bool(chunk)
+                        yield chunk
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            raise _unreachable("Gateway connection failed") from None
+        except httpx.HTTPError:
+            raise GatewayUnreachable("Gateway speech stream failed") from None
+        if not received:
+            raise GatewayError("The gateway returned no audio")
 
     async def async_close(self) -> None:
         """Cancel local waits on unload; the gateway may finish accepted work."""

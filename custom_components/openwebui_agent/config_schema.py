@@ -33,6 +33,7 @@ from .const import (
     CONF_LANGUAGE,
     CONF_MODEL,
     CONF_PRESENCE,
+    CONF_STREAM_SPEECH,
     CONF_TTS_FORMAT,
     CONF_TTS_VOICE,
     CONF_UNAVAILABLE_AFTER,
@@ -173,6 +174,7 @@ def gateway_options_schema(values: dict) -> vol.Schema:
             vol.Required(CONF_TTS_FORMAT, default=values[CONF_TTS_FORMAT]): select(
                 list(TTS_FORMATS), translation_key="tts_format"
             ),
+            vol.Required(CONF_STREAM_SPEECH, default=values[CONF_STREAM_SPEECH]): bool,
             vol.Required(CONF_FALLBACK, default=values[CONF_FALLBACK]): bool,
             vol.Required(HOUSEHOLD_SECTION): section(
                 household_schema(values), {"collapsed": True}

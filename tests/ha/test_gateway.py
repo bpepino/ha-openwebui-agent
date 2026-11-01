@@ -20,6 +20,7 @@ from homeassistant.core import Context
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import (
     area_registry as ar,
+    chat_session,
     device_registry as dr,
     entity_registry as er,
     intent,
@@ -53,6 +54,7 @@ DEFAULT_OPTIONS = {
     "completion_timeout": 120,
     "tts_voice": "",
     "tts_format": "mp3",
+    "stream_speech": True,
     "fallback_to_home_assistant": False,
     "events": True,
     "presence": [],
@@ -97,6 +99,38 @@ STILL_RUNNING = {
 }
 ACCEPTED = {"accepted": True, "event_id": "x", "reason": "reasoning_queued"}
 OFFLINE = "Assistant offline, basic commands only."
+
+
+def sse(events: list[tuple[str, dict]]) -> httpx.Response:
+    """Answer a streamed turn like the gateway (server-sent events)."""
+    body = "".join(
+        f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+        for event, data in events
+    )
+    return httpx.Response(
+        200, headers={"Content-Type": "text/event-stream"}, content=body.encode()
+    )
+
+
+STREAMED_FINAL = {
+    **REPLY,
+    "display_text": "It is sunny. Twenty degrees. Anything else?",
+    "speech_text": "It is sunny. Twenty degrees. Anything else?",
+    "expects_reply": True,
+    "continue_conversation": True,
+    "path": "direct",
+    "turn_id": "t-9",
+}
+STREAMED = [
+    (
+        "status",
+        {"phase": "accepted", "conversation_id": "gw-conv-1", "turn_id": "t-9"},
+    ),
+    ("delta", {"turn_id": "t-9", "index": 0, "text": "It is sunny. "}),
+    ("delta", {"turn_id": "t-9", "index": 1, "text": "Twenty degrees. "}),
+    ("delta", {"turn_id": "t-9", "index": 2, "text": "Anything else? "}),
+    ("final", STREAMED_FINAL),
+]
 
 
 class FakeGateway:
@@ -318,6 +352,7 @@ async def test_options_flow(hass, gateway):
         "completion_timeout",
         "tts_voice",
         "tts_format",
+        "stream_speech",
         "fallback_to_home_assistant",
         "household",
     }
@@ -525,15 +560,16 @@ async def test_assist_turn(hass, gateway, token):
     chat_log = hass.data[DATA_CHAT_LOGS][result.conversation_id]
     assert chat_log.content[-1].content == REPLY["display_text"]
     body = json.loads(gateway.turns.calls.last.request.content)
+    # The satellite's device and area; HA-side prompts (extra_system_prompt from
+    # start_conversation) are never forwarded.
     assert body == {
         "conversation_id": result.conversation_id,
         "text": "Turn on the light",
         "language": "el",
         "device_id": satellite.id,
         "area": "Living Room",
-        "extra_instructions": "Keep it short.",
         "timeout_s": 60,
-        "response": {"speech": False, "stream": False},
+        "response": {"speech": False, "stream": True},
     }
     # The follow-up goes to the gateway conversation the reply named.
     gateway.turns.respond(json={**REPLY, "new_chat": False})
@@ -615,6 +651,87 @@ async def test_assist_turn_errors_are_spoken(hass, gateway):
     assert result.continue_conversation is False
     assert gateway.turns.call_count == 1
     assert not gateway.poll.called
+
+
+async def test_streamed_turn_feeds_the_chat_log(hass, gateway):
+    """Each sentence reaches the chat log (and the pipeline's listener) as it streams."""
+    entry = await _setup(hass)
+    agent_id = _entity_id(hass, "conversation", entry.entry_id)
+    entity = hass.data[conversation.DATA_COMPONENT].get_entity(agent_id)
+    assert entity.supports_streaming is True
+    gateway.turns.side_effect = [sse(STREAMED)]
+    deltas: list[dict] = []
+    with (
+        chat_session.async_get_chat_session(hass) as session,
+        conversation.async_get_chat_log(
+            hass,
+            session,
+            chat_log_delta_listener=lambda _log, delta: deltas.append(delta),
+        ) as chat_log,
+    ):
+        result = await conversation.async_converse(
+            hass,
+            "What's the weather?",
+            session.conversation_id,
+            Context(),
+            language="en",
+            agent_id=agent_id,
+        )
+    assert deltas == [
+        {"role": "assistant"},
+        {"content": "It is sunny. "},
+        {"content": "Twenty degrees. "},
+        {"content": "Anything else? "},
+    ]
+    assert chat_log.content[-1].role == "assistant"
+    assert (
+        chat_log.content[-1].content == "It is sunny. Twenty degrees. Anything else? "
+    )
+    # One assistant message: the streamed sentences are not added a second time.
+    assert [c.role for c in chat_log.content].count("assistant") == 1
+    assert result.response.speech["plain"]["speech"] == STREAMED_FINAL["speech_text"]
+    assert result.continue_conversation is True
+    request = gateway.turns.calls.last.request
+    assert json.loads(request.content)["response"] == {"speech": False, "stream": True}
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+    assert diagnostics["last_turn_path"] == "direct"
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        # The gateway's flag wins over expects_reply and over a question mark.
+        ({"continue_conversation": False, "expects_reply": True}, False),
+        ({"continue_conversation": True, "expects_reply": False}, True),
+        # An older gateway without the field: expects_reply.
+        ({"expects_reply": True}, True),
+        ({"expects_reply": False}, False),
+        # A degraded answer never listens on.
+        ({"continue_conversation": True, "degraded": True}, False),
+    ],
+)
+async def test_gateway_decides_continue_conversation(hass, gateway, answer, expected):
+    """continue_conversation comes from the gateway, never from local guesses."""
+    entry = await _setup(hass)
+    agent_id = _entity_id(hass, "conversation", entry.entry_id)
+    gateway.turns.respond(
+        json={
+            **REPLY,
+            "display_text": "Which room?",
+            "speech_text": "Which room?",
+            **answer,
+        }
+    )
+    result = await conversation.async_converse(
+        hass, "Turn on the light", None, Context(), language="en", agent_id=agent_id
+    )
+    assert result.continue_conversation is expected
+    # "let's talk" is no longer a local switch in gateway mode.
+    gateway.turns.respond(json={**REPLY, "continue_conversation": False})
+    result = await conversation.async_converse(
+        hass, "Let's talk", None, Context(), language="en", agent_id=agent_id
+    )
+    assert result.continue_conversation is False
 
 
 async def test_degraded_gateway_answer(hass, gateway):
@@ -828,6 +945,87 @@ async def test_text_to_speech(hass, gateway):
             hass,
             generate_media_source_id(hass, "Again", engine=engine, cache=False),
         )
+
+
+async def test_streamed_text_to_speech(hass, gateway):
+    """Each sentence is spoken (MP3) as soon as the streamed text completes it."""
+    entry = await _setup(hass, options={"tts_voice": "maria", "tts_format": "opus"})
+    entity = hass.data[tts.DATA_COMPONENT].get_entity(
+        _entity_id(hass, "tts", f"{entry.entry_id}-tts")
+    )
+    assert entity.async_supports_streaming_input() is True
+    sentences = iter([b"ID3-one", b"ID3-two", b"ID3-three"])
+    gateway.tts.side_effect = lambda request: httpx.Response(
+        200, content=next(sentences), headers={"Content-Type": "audio/mpeg"}
+    )
+    spoken: list[str] = []
+
+    async def message_gen():
+        for part in ("It is sunny. Twen", "ty degrees. ", "Anything else?"):
+            yield part
+            # The first sentence is requested before the rest of the text exists.
+            spoken.append(str(gateway.tts.call_count))
+
+    response = await entity.async_stream_tts_audio(
+        tts.TTSAudioRequest("en", {"voice": "maria"}, message_gen())
+    )
+    assert response.extension == "mp3"
+    audio = b"".join([chunk async for chunk in response.data_gen])
+    assert audio == b"ID3-oneID3-twoID3-three"
+    bodies = [json.loads(call.request.content) for call in gateway.tts.calls]
+    assert [b["input"] for b in bodies] == [
+        "It is sunny.",
+        "Twenty degrees.",
+        "Anything else?",
+    ]
+    assert {b["response_format"] for b in bodies} == {"mp3"}
+    assert {b["voice"] for b in bodies} == {"maria"}
+    assert spoken[:2] == ["1", "2"]
+
+    # A failed sentence fails the stream with Home Assistant's error.
+    gateway.tts.side_effect = None
+    gateway.tts.return_value = httpx.Response(503, text="no TTS")
+
+    async def one():
+        yield "Hello."
+
+    response = await entity.async_stream_tts_audio(tts.TTSAudioRequest("en", {}, one()))
+    with pytest.raises(HomeAssistantError):
+        async for _ in response.data_gen:
+            pass
+
+
+async def test_streamed_speech_off_speaks_once(hass, gateway):
+    """Off: one call with the whole answer, in the configured format."""
+    entry = await _setup(hass, options={"stream_speech": False})
+    engine = _entity_id(hass, "tts", f"{entry.entry_id}-tts")
+    entity = hass.data[tts.DATA_COMPONENT].get_entity(engine)
+    assert entity.async_supports_streaming_input() is False
+    extension, audio = await tts.async_get_media_source_audio(
+        hass,
+        generate_media_source_id(
+            hass, "It is sunny. Twenty degrees.", engine=engine, cache=False
+        ),
+    )
+    assert (extension, audio) == ("mp3", b"ID3-fake-mp3")
+    assert gateway.tts.call_count == 1
+    body = json.loads(gateway.tts.calls.last.request.content)
+    assert body["input"] == "It is sunny. Twenty degrees."
+    assert body["response_format"] == "mp3"
+    # On (the default), the same message is spoken sentence by sentence.
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, "stream_speech": True}
+    )
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    extension, audio = await tts.async_get_media_source_audio(
+        hass,
+        generate_media_source_id(
+            hass, "It is cloudy. Ten degrees.", engine=engine, cache=False
+        ),
+    )
+    assert extension == "mp3" and audio == b"ID3-fake-mp3" * 2
+    assert gateway.tts.call_count == 3
 
 
 async def test_text_to_speech_opus_is_ogg(hass, gateway):
@@ -1120,6 +1318,9 @@ async def test_diagnostics(hass, gateway):
         "last_answer": None,
         "count": 0,
     }
+    assert result["stream_speech"] is True
+    assert result["last_turn_path"] is None
+    assert "conversation_mode" not in result
     assert result["token_configured"] is True
     assert result["language"] == "el"
     assert result["household_events"]["events_token_configured"] is True
