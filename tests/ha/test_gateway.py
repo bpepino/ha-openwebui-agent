@@ -1,5 +1,7 @@
 """Gateway mode with real Home Assistant fixtures and respx at the HTTP layer."""
 
+import asyncio
+from datetime import timedelta
 import json
 
 import httpx
@@ -8,6 +10,10 @@ import respx
 
 from homeassistant import config_entries
 from homeassistant.components import conversation, stt, tts
+from homeassistant.components.conversation.chat_log import DATA_CHAT_LOGS
+from homeassistant.components.homeassistant.exposed_entities import (
+    async_expose_entity,
+)
 from homeassistant.components.tts.media_source import generate_media_source_id
 from homeassistant.core import Context
 from homeassistant.exceptions import HomeAssistantError
@@ -17,16 +23,22 @@ from homeassistant.helpers import (
     entity_registry as er,
     issue_registry as ir,
 )
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 
-from custom_components.openwebui_agent import gateway_client
+from custom_components.openwebui_agent import events, gateway_client
 from custom_components.openwebui_agent.const import DOMAIN
 from custom_components.openwebui_agent.diagnostics import (
     async_get_config_entry_diagnostics,
 )
+from custom_components.openwebui_agent.oikos import DATA_PUSHERS
 
 URL = "http://gateway.test:8000"
 TOKEN = "fake-gateway-token"
+EVENTS_TOKEN = "fake-events-token"
 DATA = {
     "backend": "gateway",
     "gateway_url": URL,
@@ -34,6 +46,24 @@ DATA = {
     "language": "el",
 }
 OPTIONS = {"completion_timeout": 60, "tts_voice": "", "tts_format": "mp3"}
+DEFAULT_OPTIONS = {
+    "completion_timeout": 120,
+    "tts_voice": "",
+    "tts_format": "mp3",
+    "events": True,
+    "presence": [],
+    "door_open_after": {"hours": 0, "minutes": 10, "seconds": 0},
+    "unavailable_after": {"hours": 0, "minutes": 2, "seconds": 0},
+    "generic_state_changes": False,
+    "gateway_events_token": "",
+}
+HOUSEHOLD = {
+    "events": True,
+    "presence": [],
+    "door_open_after": {"hours": 0, "minutes": 10, "seconds": 0},
+    "unavailable_after": {"hours": 0, "minutes": 2, "seconds": 0},
+    "generic_state_changes": False,
+}
 HEALTH = {
     "status": "ok",
     "version": "18.0.0",
@@ -41,15 +71,27 @@ HEALTH = {
 }
 NOT_FOUND = {"error": {"code": "conversation_not_found", "message": "Unknown."}}
 UNAUTHORIZED = {"error": {"code": "unauthorized", "message": "Missing bearer token"}}
+FORBIDDEN = {"error": {"code": "forbidden", "message": "Token lacks scope"}}
 REPLY = {
     "conversation_id": "gw-conv-1",
-    "display_text": "**Done.** See [the log](https://example.test).",
+    # Plain already: Home Assistant shows it as it is (no Markdown pass).
+    "display_text": "Done: the *office* light is on.",
     "speech_text": "Done.",
     "expects_reply": False,
     "new_chat": True,
     "identity": {"confidence": "device-default"},
     "timings": {"total_ms": 812},
 }
+STILL_RUNNING = {
+    "error": {
+        "code": "timeout",
+        "message": "The assistant is still working on that.",
+        "still_running": True,
+        "turn_id": "t-1",
+        "conversation_id": "gw-conv-1",
+    }
+}
+ACCEPTED = {"accepted": True, "event_id": "x", "reason": "reasoning_queued"}
 
 
 class FakeGateway:
@@ -57,30 +99,41 @@ class FakeGateway:
 
     def __init__(self, mock: respx.MockRouter) -> None:
         self.require_tokens = False
+        # A token without the assistant:turns scope (403 in both modes).
+        self.forbid_token = False
         self.health = mock.get("/health").respond(json=HEALTH)
         self.probe = mock.get("/assistant/v1/conversations/ha-auth-probe")
         self.probe.side_effect = self._probe
         self.turns = mock.post("/assistant/v1/turns").respond(json=REPLY)
         self.poll = mock.route(method="GET", path__regex=r"^/assistant/v1/turns/.+$")
         self.stt = mock.post("/v1/audio/transcriptions").respond(
-            json={"text": "Billo: anapse to fos", "fixed_greek": "άναψε το φως"}
+            json={
+                "text": "Alex: anapse to fos",
+                "plain_text": "anapse to fos",
+                "fixed_greek": "άναψε το φως",
+            }
         )
         self.tts = mock.post("/v1/audio/speech").respond(
             content=b"ID3-fake-mp3", headers={"Content-Type": "audio/mpeg"}
         )
+        self.events = mock.post("/household/v1/events").respond(202, json=ACCEPTED)
         self.mock = mock
 
     def _probe(self, request: httpx.Request) -> httpx.Response:
         """Open mode accepts anything; otherwise only the known token."""
-        if self.require_tokens and (
-            request.headers.get("Authorization") != f"Bearer {TOKEN}"
-        ):
+        token = request.headers.get("Authorization")
+        if self.forbid_token and token:
+            return httpx.Response(403, json=FORBIDDEN)
+        if self.require_tokens and token != f"Bearer {TOKEN}":
             return httpx.Response(401, json=UNAUTHORIZED)
         return httpx.Response(404, json=NOT_FOUND)
 
     @property
     def requests(self) -> list[httpx.Request]:
         return [call.request for call in self.mock.calls]
+
+    def event_bodies(self) -> list[dict]:
+        return [json.loads(call.request.content) for call in self.events.calls]
 
 
 @pytest.fixture
@@ -92,7 +145,7 @@ def gateway():
 
 @pytest.fixture(autouse=True)
 def fast_polling(monkeypatch):
-    """Poll a still-running turn without waiting a second."""
+    """Poll a still-running turn without waiting two seconds."""
     monkeypatch.setattr(gateway_client, "POLL_INTERVAL_S", 0)
 
 
@@ -108,6 +161,15 @@ async def _setup(hass, data=None, options=None) -> MockConfigEntry:
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     return entry
+
+
+async def _wait_for(condition) -> None:
+    """Let the event push's background sender run until ``condition`` holds."""
+    for _ in range(200):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition not met")
 
 
 def _entity_id(hass, platform: str, unique_id: str) -> str:
@@ -149,11 +211,7 @@ async def test_setup_flow_open_mode(hass, gateway):
     assert result["type"] == "create_entry"
     assert result["title"] == "AI gateway"
     assert result["data"] == {**DATA, "gateway_token": ""}
-    assert result["options"] == {
-        "completion_timeout": 120,
-        "tts_voice": "",
-        "tts_format": "mp3",
-    }
+    assert result["options"] == DEFAULT_OPTIONS
     await hass.async_block_till_done()
     # Open mode: no request ever carried a token.
     assert gateway.requests
@@ -228,13 +286,28 @@ async def test_same_gateway_twice_aborts(hass, gateway):
 
 
 async def test_options_flow(hass, gateway):
-    """Options: turn timeout, voice and audio format only."""
+    """Options: wait, voice, format, and the household events in one section."""
     entry = await _setup(hass, options={"tts_voice": "maria"})
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["step_id"] == "init"
-    assert _fields(result) == {"completion_timeout", "tts_voice", "tts_format"}
+    assert _fields(result) == {
+        "completion_timeout",
+        "tts_voice",
+        "tts_format",
+        "household",
+    }
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"completion_timeout": 45, "tts_format": "opus"}
+        result["flow_id"],
+        {
+            "completion_timeout": 45,
+            "tts_format": "opus",
+            "household": {
+                **HOUSEHOLD,
+                "presence": ["person.alex"],
+                "door_open_after": {"hours": 0, "minutes": 5, "seconds": 0},
+                "gateway_events_token": f" {EVENTS_TOKEN} ",
+            },
+        },
     )
     assert result["type"] == "create_entry"
     await hass.async_block_till_done()
@@ -242,7 +315,22 @@ async def test_options_flow(hass, gateway):
     assert entry.options["tts_format"] == "opus"
     # A cleared voice field falls back to the gateway's speech profile voice.
     assert entry.options["tts_voice"] == ""
-    assert "chat_model" not in entry.options
+    assert entry.options["presence"] == ["person.alex"]
+    assert entry.options["door_open_after"] == {"hours": 0, "minutes": 5, "seconds": 0}
+    assert entry.options["gateway_events_token"] == EVENTS_TOKEN
+    assert "household" not in entry.options and "chat_model" not in entry.options
+    # The reload after saving started a new event push; the view is not re-added.
+    assert entry.state is config_entries.ConfigEntryState.LOADED
+    assert hass.data[DATA_PUSHERS][entry.entry_id].has_token
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {"completion_timeout": 45, "tts_format": "opus", "household": HOUSEHOLD},
+    )
+    await hass.async_block_till_done()
+    # A cleared events token sends events without one (open mode).
+    assert entry.options["gateway_events_token"] == ""
 
 
 async def test_reauth_replaces_token(hass, gateway):
@@ -267,6 +355,32 @@ async def test_reauth_replaces_token(hass, gateway):
     assert result["type"] == "abort" and result["reason"] == "reauth_successful"
     await hass.async_block_till_done()
     assert entry.data == {**DATA, "gateway_token": TOKEN}
+    assert entry.state is config_entries.ConfigEntryState.LOADED
+
+
+async def test_forbidden_token_starts_reauth(hass, gateway):
+    """A 403 at setup (token without assistant:turns) asks for a token, not retries."""
+    gateway.forbid_token = True
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**DATA, "gateway_token": TOKEN},
+        options=OPTIONS,
+        version=2,
+    )
+    entry.add_to_hass(hass)
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+    assert entry.state is config_entries.ConfigEntryState.SETUP_ERROR
+    flows = hass.config_entries.flow.async_progress()
+    assert [flow["context"]["source"] for flow in flows] == ["reauth"]
+    result = await hass.config_entries.flow.async_configure(flows[0]["flow_id"])
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"gateway_token": TOKEN}
+    )
+    assert result["errors"] == {"base": "gateway_forbidden"}
+    # Open mode: an empty token is a valid answer.
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    assert result["type"] == "abort" and result["reason"] == "reauth_successful"
+    await hass.async_block_till_done()
     assert entry.state is config_entries.ConfigEntryState.LOADED
 
 
@@ -320,8 +434,10 @@ async def test_setup_creates_three_entities_on_one_device(hass, gateway):
     registry = er.async_get(hass)
     assert {registry.async_get(i).device_id for i in ids} == {device.id}
     assert not ir.async_get(hass).issues  # no deprecation notice for the gateway
+    assert entry.entry_id in hass.data[DATA_PUSHERS]
     assert await hass.config_entries.async_unload(entry.entry_id)
     assert entry.entry_id not in hass.data[DOMAIN]
+    assert entry.entry_id not in hass.data[DATA_PUSHERS]
 
 
 async def test_setup_retries_while_unreachable(hass, gateway):
@@ -335,7 +451,7 @@ async def test_setup_retries_while_unreachable(hass, gateway):
 
 @pytest.mark.parametrize("token", ["", TOKEN])
 async def test_assist_turn(hass, gateway, token):
-    """Satellite device and area, polling, expects_reply and conversation mapping."""
+    """Satellite context, the 504 envelope, its follow-up and the mapping."""
     gateway.require_tokens = bool(token)
     entry = await _setup(hass, data={"gateway_token": token})
     agent_id = _entity_id(hass, "conversation", entry.entry_id)
@@ -351,13 +467,18 @@ async def test_assist_turn(hass, gateway, token):
         device_id=satellite.id,
         suggested_object_id="living_room",
     )
-    # Accepted, still running, then finished with a question.
-    gateway.turns.respond(
-        json={"still_running": True, "turn_id": "turn-1", "conversation_id": "c"}
-    )
+    # Accepted, past its deadline (504 with turn_id), running, then done.
+    gateway.turns.respond(504, json=STILL_RUNNING)
     gateway.poll.side_effect = [
-        httpx.Response(200, json={"still_running": True, "turn_id": "turn-1"}),
-        httpx.Response(200, json={**REPLY, "expects_reply": True, "turn_id": "turn-1"}),
+        httpx.Response(202, json={"turn_id": "t-1", "status": "running"}),
+        httpx.Response(
+            200,
+            json={
+                "turn_id": "t-1",
+                "status": "done",
+                "result": {**REPLY, "expects_reply": True, "turn_id": "t-1"},
+            },
+        ),
     ]
     result = await conversation.async_converse(
         hass,
@@ -371,8 +492,12 @@ async def test_assist_turn(hass, gateway, token):
     )
     assert result.response.speech["plain"]["speech"] == "Done."
     assert result.continue_conversation is True
+    assert gateway.turns.call_count == 1  # never resubmitted
     assert gateway.poll.call_count == 2
-    assert gateway.poll.calls.last.request.url.path == "/assistant/v1/turns/turn-1"
+    assert gateway.poll.calls.last.request.url.path == "/assistant/v1/turns/t-1"
+    # The display text is already plain: shown as it is, no second Markdown pass.
+    chat_log = hass.data[DATA_CHAT_LOGS][result.conversation_id]
+    assert chat_log.content[-1].content == REPLY["display_text"]
     body = json.loads(gateway.turns.calls.last.request.content)
     assert body == {
         "conversation_id": result.conversation_id,
@@ -407,8 +532,44 @@ async def test_assist_turn(hass, gateway, token):
             )
 
 
+@pytest.mark.parametrize(
+    ("poll", "spoken"),
+    [
+        (
+            httpx.Response(
+                200,
+                json={
+                    "turn_id": "t-1",
+                    "status": "failed",
+                    "error": {"code": "agent_failed", "message": "No answer."},
+                },
+            ),
+            "Open WebUI did not save a completed text answer",
+        ),
+        (
+            httpx.Response(
+                404, json={"error": {"code": "turn_not_found", "message": "Gone."}}
+            ),
+            "still working",
+        ),
+    ],
+)
+async def test_followed_up_turn_failed_or_expired(hass, gateway, poll, spoken):
+    """A failed turn speaks its error; 404 keeps "still working"."""
+    entry = await _setup(hass)
+    agent_id = _entity_id(hass, "conversation", entry.entry_id)
+    gateway.turns.respond(504, json=STILL_RUNNING)
+    gateway.poll.side_effect = [poll]
+    result = await conversation.async_converse(
+        hass, "Open the garage", None, Context(), language="en", agent_id=agent_id
+    )
+    assert spoken in result.response.speech["plain"]["speech"]
+    assert result.continue_conversation is False
+    assert gateway.turns.call_count == 1 and gateway.poll.call_count == 1
+
+
 async def test_assist_turn_errors_are_spoken(hass, gateway):
-    """A deadline after acceptance says it is still working; never retried."""
+    """A deadline after acceptance without a turn_id says it is still working."""
     entry = await _setup(hass)
     agent_id = _entity_id(hass, "conversation", entry.entry_id)
     gateway.turns.respond(
@@ -427,10 +588,11 @@ async def test_assist_turn_errors_are_spoken(hass, gateway):
     assert "still working" in result.response.speech["plain"]["speech"]
     assert result.continue_conversation is False
     assert gateway.turns.call_count == 1
+    assert not gateway.poll.called
 
 
 async def test_speech_to_text(hass, gateway):
-    """WAV upload in the configured language; the repaired transcript wins."""
+    """WAV upload in the pipeline's language; plain_text, never fixed_greek."""
     entry = await _setup(hass)
     entity = stt.async_get_speech_to_text_entity(
         hass, _entity_id(hass, "stt", f"{entry.entry_id}-stt")
@@ -441,30 +603,34 @@ async def test_speech_to_text(hass, gateway):
         yield b"\x01\x02" * 800
         yield b"\x03\x04" * 800
 
-    metadata = stt.SpeechMetadata(
-        language="en",
-        format=stt.AudioFormats.WAV,
-        codec=stt.AudioCodecs.PCM,
-        bit_rate=stt.AudioBitRates.BITRATE_16,
-        sample_rate=stt.AudioSampleRates.SAMPLERATE_16000,
-        channel=stt.AudioChannels.CHANNEL_MONO,
-    )
-    result = await entity.async_process_audio_stream(metadata, audio())
-    assert result == stt.SpeechResult("άναψε το φως", stt.SpeechResultState.SUCCESS)
+    def metadata(language: str) -> stt.SpeechMetadata:
+        return stt.SpeechMetadata(
+            language=language,
+            format=stt.AudioFormats.WAV,
+            codec=stt.AudioCodecs.PCM,
+            bit_rate=stt.AudioBitRates.BITRATE_16,
+            sample_rate=stt.AudioSampleRates.SAMPLERATE_16000,
+            channel=stt.AudioChannels.CHANNEL_MONO,
+        )
+
+    result = await entity.async_process_audio_stream(metadata("en-US"), audio())
+    assert result == stt.SpeechResult("anapse to fos", stt.SpeechResultState.SUCCESS)
     request = gateway.stt.calls.last.request
     assert request.headers["Content-Type"].startswith("multipart/form-data")
     content = request.content
-    assert b'name="language"\r\n\r\nel\r\n' in content  # configured, not "en"
+    assert b'name="language"\r\n\r\nen\r\n' in content  # the pipeline's base code
     assert b'name="model"\r\n\r\nwhisper-1\r\n' in content
     assert b'filename="audio.wav"' in content
     assert b"RIFF" in content and b"WAVEfmt " in content
     assert "Authorization" not in request.headers
 
-    gateway.stt.respond(json={"text": "plain transcript"})
-    result = await entity.async_process_audio_stream(metadata, audio())
+    # Without a pipeline language the configured one is sent.
+    gateway.stt.respond(json={"text": "plain transcript", "fixed_greek": "x"})
+    result = await entity.async_process_audio_stream(metadata(""), audio())
     assert result.text == "plain transcript"
+    assert b'name="language"\r\n\r\nel\r\n' in gateway.stt.calls.last.request.content
     gateway.stt.respond(502, json={"detail": "Speaches failed"})
-    result = await entity.async_process_audio_stream(metadata, audio())
+    result = await entity.async_process_audio_stream(metadata("el"), audio())
     assert result.result is stt.SpeechResultState.ERROR
 
 
@@ -520,10 +686,254 @@ async def test_text_to_speech_defaults_to_gateway_voice(hass, gateway):
     assert "voice" not in json.loads(gateway.tts.calls.last.request.content)
 
 
+async def test_oikos_view(hass, gateway, hass_client, hass_client_no_auth):
+    """Exposed entities only, with area names, in the shape the gateway reads."""
+    await _setup(hass)
+    areas, devices, entities = (
+        ar.async_get(hass),
+        dr.async_get(hass),
+        er.async_get(hass),
+    )
+    kitchen, hall = areas.async_create("Kitchen"), areas.async_create("Hall")
+    lamp_device = devices.async_get_or_create(
+        config_entry_id=hass.config_entries.async_entries(DOMAIN)[0].entry_id,
+        identifiers={("test", "lamp")},
+    )
+    devices.async_update_device(lamp_device.id, area_id=kitchen.id)
+    lamp = entities.async_get_or_create(
+        "light", "test", "lamp", device_id=lamp_device.id, suggested_object_id="lamp"
+    )
+    entities.async_update_entity(lamp.entity_id, aliases=["ceiling light"])
+    hass.states.async_set(
+        "light.lamp",
+        "on",
+        {
+            "friendly_name": "Kitchen lamp",
+            "brightness": 200,
+            "supported_color_modes": ["brightness"],
+            "entity_picture": "/local/lamp.png",
+        },
+    )
+    sensor = entities.async_get_or_create(
+        "sensor", "test", "temp", suggested_object_id="temp"
+    )
+    entities.async_update_entity(sensor.entity_id, area_id=hall.id)
+    hass.states.async_set(
+        "sensor.temp",
+        "21.5",
+        {"friendly_name": "Hall temperature", "unit_of_measurement": "°C"},
+    )
+    entities.async_get_or_create(
+        "switch", "test", "hidden", suggested_object_id="hidden"
+    )
+    hass.states.async_set("switch.hidden", "off")
+    async_expose_entity(hass, "conversation", "light.lamp", True)
+    async_expose_entity(hass, "conversation", "sensor.temp", True)
+    async_expose_entity(hass, "conversation", "switch.hidden", False)
+
+    client = await hass_client()
+    response = await client.get("/api/oikos?area=1&caps=1&assistant=conversation")
+    assert response.status == 200
+    body = await response.json()
+    assert body["assistant"] == "conversation"
+    by_id = {item["entity_id"]: item for item in body["entities"]}
+    assert "switch.hidden" not in by_id
+    assert body["count"] == len(body["entities"])
+    assert {k: v for k, v in by_id["light.lamp"].items() if k != "services"} == {
+        "entity_id": "light.lamp",
+        "name": "Kitchen lamp",
+        "aliases": ["ceiling light"],
+        "domain": "light",
+        "state": "on",
+        "available": True,
+        "area_name": "Kitchen",
+        "capabilities": {"brightness": 200, "supported_color_modes": ["brightness"]},
+        "actions": ["turn_on", "turn_off", "toggle", "set_brightness"],
+    }
+    assert isinstance(by_id["light.lamp"]["services"], list)
+    assert by_id["sensor.temp"]["area_name"] == "Hall"  # the entity's own area
+    assert by_id["sensor.temp"]["actions"] == ["read_state"]
+    assert by_id["sensor.temp"]["services"] == []
+    assert body["push"]["enabled"] is True
+    assert body["push"]["sent"] == 0
+
+    response = await client.get("/api/oikos?slim=1&area=1")
+    slim = {item["entity_id"]: item for item in (await response.json())["entities"]}
+    assert slim["light.lamp"] == {
+        "entity_id": "light.lamp",
+        "name": "Kitchen lamp",
+        "aliases": ["ceiling light"],
+        "domain": "light",
+        "area_name": "Kitchen",
+    }
+    response = await client.get("/api/oikos?all=1")
+    everything = {
+        item["entity_id"]: item for item in (await response.json())["entities"]
+    }
+    assert everything["switch.hidden"]["exposed"] is False
+    assert (await client.get("/api/oikos?assistant=other")).status == 400
+    assert (
+        await client.get("/api/oikos?assistant=conversation.home_assistant")
+    ).status == 200
+    assert (await (await hass_client_no_auth()).get("/api/oikos")).status == 401
+
+
+@pytest.mark.parametrize("events_token", ["", EVENTS_TOKEN])
+async def test_person_arrival_is_pushed(hass, gateway, events_token):
+    """person_arrived_home with its deterministic id; a token only when set."""
+    hass.states.async_set("person.alex", "not_home")
+    hass.states.async_set("person.anna", "not_home")
+    entry = await _setup(
+        hass,
+        options={"presence": ["person.alex"], "gateway_events_token": events_token},
+    )
+    hass.states.async_set("person.anna", "home")  # not listed: not tracked
+    hass.states.async_set(
+        "person.alex", "home", {"friendly_name": "Alex", "source": "device_tracker.p"}
+    )
+    changed = hass.states.get("person.alex").last_changed
+    await _wait_for(lambda: gateway.events.called)
+    assert gateway.events.call_count == 1
+    request = gateway.events.calls.last.request
+    assert request.url == f"{URL}/household/v1/events"
+    assert request.headers.get("Authorization") == (
+        f"Bearer {events_token}" if events_token else None
+    )
+    body = json.loads(request.content)
+    assert body == {
+        "source": "home_assistant",
+        "type": "person_arrived_home",
+        "entity_id": "person.alex",
+        "timestamp": changed.isoformat(),
+        "data": {
+            "state": "home",
+            "previous": "not_home",
+            "name": "Alex",
+            "source": "device_tracker.p",
+        },
+        "priority": "normal",
+        "event_id": events.event_id_for("person_arrived_home", "person.alex", changed),
+    }
+    pusher = hass.data[DATA_PUSHERS][entry.entry_id]
+    assert pusher.status()["sent"] == 1
+    # The diagnostics show the counts and whether a token is set, never the token.
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+    household = diagnostics["household_events"]
+    assert household["push"]["sent"] == 1
+    assert household["events_token_configured"] is bool(events_token)
+    assert household["presence_count"] == 1
+    assert EVENTS_TOKEN not in str(diagnostics)
+
+
+async def test_exposed_person_is_tracked_without_a_presence_list(hass, gateway):
+    """Empty presence: every person exposed to Assist."""
+    hass.states.async_set("person.alex", "home")
+    hass.states.async_set("person.anna", "home")
+    async_expose_entity(hass, "conversation", "person.alex", True)
+    async_expose_entity(hass, "conversation", "person.anna", False)
+    await _setup(hass)
+    hass.states.async_set("person.anna", "not_home")
+    hass.states.async_set("person.alex", "not_home")
+    await _wait_for(lambda: gateway.events.called)
+    await asyncio.sleep(0.05)
+    assert [(b["type"], b["entity_id"]) for b in gateway.event_bodies()] == [
+        ("person_left_home", "person.alex")
+    ]
+
+
+async def test_event_push_retries_server_errors(hass, gateway, monkeypatch):
+    """5xx is retried (3 attempts in all); a rejected body is not."""
+    monkeypatch.setattr(events, "RETRY_DELAYS_S", (0, 0))
+    hass.states.async_set("person.alex", "not_home")
+    entry = await _setup(hass, options={"presence": ["person.alex"]})
+    pusher = hass.data[DATA_PUSHERS][entry.entry_id]
+    gateway.events.side_effect = [
+        httpx.Response(503, text="busy"),
+        httpx.ConnectError("refused"),
+        httpx.Response(202, json=ACCEPTED),
+    ]
+    hass.states.async_set("person.alex", "home")
+    await _wait_for(lambda: pusher.sent == 1)
+    assert gateway.events.call_count == 3
+    ids = {b["event_id"] for b in gateway.event_bodies()}
+    assert len(ids) == 1  # the same event every time: a duplicate at the gateway
+    assert pusher.failed == 0
+
+    gateway.events.side_effect = [httpx.Response(401, json={"error": "unauthorized"})]
+    hass.states.async_set("person.alex", "not_home")
+    await _wait_for(lambda: pusher.failed == 1)
+    assert gateway.events.call_count == 4
+    assert "no events token is set" in pusher.status()["last_error"]
+
+
+async def test_door_open_long_and_clean_unload(hass, gateway, hass_client):
+    """Timers fire while loaded; unload removes listeners, timers and the push."""
+    hass.states.async_set(
+        "binary_sensor.garage", "off", {"device_class": "garage_door"}
+    )
+    hass.states.async_set("binary_sensor.front", "off", {"device_class": "door"})
+    hass.states.async_set("person.alex", "not_home")
+    for entity_id in ("binary_sensor.garage", "binary_sensor.front"):
+        async_expose_entity(hass, "conversation", entity_id, True)
+    entry = await _setup(
+        hass,
+        options={
+            "presence": ["person.alex"],
+            "door_open_after": {"hours": 0, "minutes": 1, "seconds": 0},
+        },
+    )
+    pusher = hass.data[DATA_PUSHERS][entry.entry_id]
+    hass.states.async_set("binary_sensor.garage", "on", {"device_class": "garage_door"})
+    opened = hass.states.get("binary_sensor.garage").last_changed
+    assert pusher.status()["pending_timers"] == 1
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=2))
+    await _wait_for(lambda: gateway.events.called)
+    body = gateway.event_bodies()[-1]
+    assert body["type"] == "door_open_long" and body["priority"] == "high"
+    assert body["event_id"] == events.event_id_for(
+        "door_open_long", "binary_sensor.garage", opened
+    )
+
+    hass.states.async_set("binary_sensor.front", "on", {"device_class": "door"})
+    assert pusher.status()["pending_timers"] == 1
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    assert pusher.status() | {"enabled": None} == pusher.status() | {
+        "enabled": None,
+        "pending_timers": 0,
+    }
+    assert not pusher.status()["enabled"]
+    assert DATA_PUSHERS not in hass.data or not hass.data[DATA_PUSHERS]
+    calls = gateway.events.call_count
+    hass.states.async_set("person.alex", "home")
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=10))
+    await hass.async_block_till_done()
+    await asyncio.sleep(0.05)
+    assert gateway.events.call_count == calls
+    # The view outlives the entry and reports the push as off.
+    client = await hass_client()
+    body = await (await client.get("/api/oikos")).json()
+    assert body["push"]["enabled"] is False
+
+
+async def test_events_off(hass, gateway):
+    """Events off: nothing is watched or sent."""
+    hass.states.async_set("person.alex", "not_home")
+    entry = await _setup(hass, options={"events": False, "presence": ["person.alex"]})
+    assert entry.entry_id not in hass.data.get(DATA_PUSHERS, {})
+    hass.states.async_set("person.alex", "home")
+    await hass.async_block_till_done()
+    await asyncio.sleep(0.05)
+    assert not gateway.events.called
+
+
 async def test_diagnostics(hass, gateway):
     """Live check and settings, never the URL or the token."""
     gateway.require_tokens = True
-    entry = await _setup(hass, data={"gateway_token": TOKEN})
+    entry = await _setup(
+        hass,
+        data={"gateway_token": TOKEN},
+        options={"gateway_events_token": EVENTS_TOKEN},
+    )
     result = await async_get_config_entry_diagnostics(hass, entry)
     assert result["backend"] == "gateway"
     assert result["gateway"] == {
@@ -534,7 +944,12 @@ async def test_diagnostics(hass, gateway):
     }
     assert result["token_configured"] is True
     assert result["language"] == "el"
-    assert all(secret not in str(result) for secret in (TOKEN, "gateway.test"))
+    assert result["household_events"]["events_token_configured"] is True
+    assert result["household_events"]["door_open_after_s"] == 600
+    assert result["household_events"]["unavailable_after_s"] == 120
+    assert all(
+        secret not in str(result) for secret in (TOKEN, EVENTS_TOKEN, "gateway.test")
+    )
     gateway.health.side_effect = httpx.ConnectError("refused")
     result = await async_get_config_entry_diagnostics(hass, entry)
     assert result["gateway"] == {"error": "gateway_unreachable"}

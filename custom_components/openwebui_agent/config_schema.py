@@ -4,7 +4,12 @@ from typing import Any
 
 import voluptuous as vol
 
+from homeassistant.data_entry_flow import section
 from homeassistant.helpers.selector import (
+    DurationSelector,
+    DurationSelectorConfig,
+    EntitySelector,
+    EntitySelectorConfig,
     LanguageSelector,
     LanguageSelectorConfig,
     SelectSelector,
@@ -18,13 +23,20 @@ from homeassistant.helpers.selector import (
 from .client import Resource
 from .const import (
     CONF_COMPLETION_TIMEOUT,
+    CONF_DOOR_OPEN_AFTER,
+    CONF_EVENTS,
+    CONF_EVENTS_TOKEN,
     CONF_GATEWAY_TOKEN,
     CONF_GATEWAY_URL,
+    CONF_GENERIC_STATE_CHANGES,
     CONF_LANGUAGE,
     CONF_MODEL,
+    CONF_PRESENCE,
     CONF_TTS_FORMAT,
     CONF_TTS_VOICE,
+    CONF_UNAVAILABLE_AFTER,
     FEATURES,
+    HOUSEHOLD_SECTION,
     LANGUAGES,
     NAME,
     TTS_FORMATS,
@@ -120,8 +132,34 @@ def token_schema() -> vol.Schema:
     return vol.Schema({vol.Optional(CONF_GATEWAY_TOKEN): PASSWORD})
 
 
+def household_schema(values: dict) -> vol.Schema:
+    """Choose the household events pushed to the gateway (collapsed in Configure)."""
+    duration = DurationSelector(DurationSelectorConfig(enable_day=False))
+    return vol.Schema(
+        {
+            vol.Required(CONF_EVENTS, default=values[CONF_EVENTS]): bool,
+            vol.Optional(CONF_PRESENCE, default=values[CONF_PRESENCE]): EntitySelector(
+                EntitySelectorConfig(domain="person", multiple=True)
+            ),
+            vol.Required(
+                CONF_DOOR_OPEN_AFTER, default=values[CONF_DOOR_OPEN_AFTER]
+            ): duration,
+            vol.Required(
+                CONF_UNAVAILABLE_AFTER, default=values[CONF_UNAVAILABLE_AFTER]
+            ): duration,
+            vol.Required(
+                CONF_GENERIC_STATE_CHANGES, default=values[CONF_GENERIC_STATE_CHANGES]
+            ): bool,
+            vol.Optional(
+                CONF_EVENTS_TOKEN,
+                description={"suggested_value": values[CONF_EVENTS_TOKEN] or None},
+            ): PASSWORD,
+        }
+    )
+
+
 def gateway_options_schema(values: dict) -> vol.Schema:
-    """Gateway options: how long to wait for an answer, and the spoken voice."""
+    """Gateway options: the wait, the spoken voice, and the household events."""
     return vol.Schema(
         {
             vol.Required(
@@ -133,6 +171,9 @@ def gateway_options_schema(values: dict) -> vol.Schema:
             ): str,
             vol.Required(CONF_TTS_FORMAT, default=values[CONF_TTS_FORMAT]): select(
                 list(TTS_FORMATS), translation_key="tts_format"
+            ),
+            vol.Required(HOUSEHOLD_SECTION): section(
+                household_schema(values), {"collapsed": True}
             ),
         }
     )

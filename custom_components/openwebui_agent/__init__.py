@@ -9,21 +9,26 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.helpers.storage import Store
 
 from .client import OpenWebUIClient
 from .const import (
     BACKEND_GATEWAY,
+    CONF_EVENTS,
     DEFAULT_OPTIONS,
     DOMAIN,
+    GATEWAY_DEFAULT_OPTIONS,
     LOGGER,
     VERSION,
     entry_backend,
 )
-from .exceptions import AuthenticationError, OpenWebUIError
+from .exceptions import AuthenticationError, GatewayForbidden, OpenWebUIError
 from .gateway import create_gateway_client
 from .history import ChatHistoryCleaner
 from .migration import migrate_options
+from .oikos import DATA_PUSHERS, async_register_view
+from .push import EventPusher
 from .state import ConversationManager
 
 # The gateway serves the whole Assist pipeline: agent, speech-to-text and
@@ -50,9 +55,10 @@ async def _async_setup_gateway(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     client = create_gateway_client(hass, entry.data, entry.options)
     try:
         status = await client.async_check()
-    except AuthenticationError as err:
+    except (AuthenticationError, GatewayForbidden) as err:
+        # 403: the token lacks the assistant:turns scope; retrying cannot help.
         raise ConfigEntryAuthFailed(
-            "The gateway requires a token or rejected this one"
+            "The gateway requires a token, rejected this one or does not allow it"
         ) from err
     except OpenWebUIError as err:
         raise ConfigEntryNotReady("The AI gateway is unavailable") from err
@@ -70,6 +76,9 @@ async def _async_setup_gateway(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN].pop(entry.entry_id, None)
         raise
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+    # The gateway's household reviews read /api/oikos and receive these events.
+    async_register_view(hass)
+    _async_start_push(hass, entry, client.base_url)
     LOGGER.debug(
         "Open WebUI Agent %s initialized in gateway mode (gateway %s, open mode %s)",
         VERSION,
@@ -77,6 +86,29 @@ async def _async_setup_gateway(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         status.open_mode,
     )
     return True
+
+
+def _async_start_push(hass: HomeAssistant, entry: ConfigEntry, base_url: str) -> None:
+    """Push household events unless the owner turned them off."""
+    options = {**GATEWAY_DEFAULT_OPTIONS, **entry.options}
+    if not options[CONF_EVENTS]:
+        return
+    pusher = EventPusher(
+        hass,
+        base_url,
+        options,
+        get_async_client(hass, verify_ssl=options["verify_ssl"]),
+    )
+    hass.data.setdefault(DATA_PUSHERS, {})[entry.entry_id] = pusher
+    pusher.start(
+        lambda target, name: entry.async_create_background_task(hass, target, name)
+    )
+
+    def _stop() -> None:
+        pusher.stop()
+        hass.data[DATA_PUSHERS].pop(entry.entry_id, None)
+
+    entry.async_on_unload(_stop)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

@@ -168,16 +168,15 @@ class OpenWebUIAgent(conversation.ConversationEntity):
                 await self._async_error_message(user_input.language, err),
             )
         else:
-            if self.entry.options.get(
+            # The gateway's display_text is already plain and its speech_text
+            # TTS-ready; only Open WebUI's own answer is Markdown.
+            if not self._gateway and self.entry.options.get(
                 "strip_markdown", DEFAULT_OPTIONS["strip_markdown"]
             ):
-                text = self._markdown.render(text).strip()
-                if not self._gateway:
-                    speech = text
+                text = speech = self._markdown.render(text).strip()
             chat_log.async_add_assistant_content_without_tools(
                 AssistantContent(agent_id=self.entity_id, content=text)
             )
-            # Gateway speech_text is already TTS-ready (no markup, links or URLs).
             response.async_set_speech(speech)
             continue_conversation = self._continue_conversation(
                 user_input, chat_log, expects_reply

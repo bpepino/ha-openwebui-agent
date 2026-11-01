@@ -1,12 +1,16 @@
 {
   "domain": "openwebui_agent",
   "name": "Open WebUI Agent",
+  "after_dependencies": [
+    "person"
+  ],
   "codeowners": [
     "@bpepino"
   ],
   "config_flow": true,
   "dependencies": [
-    "conversation"
+    "conversation",
+    "http"
   ],
   "documentation": "https://github.com/bpepino/ha-openwebui-agent",
   "integration_type": "service",
@@ -16,5 +20,5 @@
     "markdown-it-py==4.2.0",
     "mdit-plain==1.0.1"
   ],
-  "version": "3.0.0"
+  "version": "3.0.1"
 }

@@ -1,7 +1,9 @@
 # The contents of this file is based on https://github.com/home-assistant/core/blob/dev/pyproject.toml
 
 target-version = "py312"
-extend-exclude = [".research", ".venv"]
+# events.py is the gateway's pure event module, kept byte-identical to the
+# copy archived in the gateway repository.
+extend-exclude = [".research", ".venv", "custom_components/openwebui_agent/events.py"]
 
 [lint]
 

@@ -21,6 +21,12 @@ async def async_setup_entry(
     async_add_entities([GatewaySpeechToText(hass, entry)])
 
 
+def base_language(language: str | None) -> str | None:
+    """Drop the region of the pipeline's language: ``en-US`` -> ``en``."""
+    code = (language or "").strip().replace("_", "-").split("-")[0].lower()
+    return code or None
+
+
 def pcm_to_wav(pcm: bytes, metadata: stt.SpeechMetadata) -> bytes:
     """Assist streams raw PCM for WAV; the gateway expects a complete file."""
     buffer = io.BytesIO()
@@ -78,7 +84,7 @@ class GatewaySpeechToText(stt.SpeechToTextEntity):
     async def async_process_audio_stream(
         self, metadata: stt.SpeechMetadata, stream: AsyncIterable[bytes]
     ) -> stt.SpeechResult:
-        """Upload the whole utterance in the configured language."""
+        """Upload the whole utterance in the pipeline's language, else the configured one."""
         audio = b"".join([chunk async for chunk in stream])
         if metadata.codec == stt.AudioCodecs.PCM:
             audio, filename, content_type = (
@@ -91,7 +97,8 @@ class GatewaySpeechToText(stt.SpeechToTextEntity):
         try:
             text = await self.client.async_transcribe(
                 audio,
-                language=self.entry.data.get(CONF_LANGUAGE) or metadata.language,
+                language=base_language(metadata.language)
+                or self.entry.data.get(CONF_LANGUAGE),
                 filename=filename,
                 content_type=content_type,
             )

@@ -8,9 +8,11 @@ It gives Home Assistant three things, all served by the gateway:
 - **speech-to-text** (the gateway's voice pipeline, with speaker identification and transcript repair),
 - **text-to-speech** (the gateway's speech profile, with translation when needed).
 
-**Nothing else is needed in Home Assistant.** No OpenAI STT/TTS integrations, no extra add-ons, no API keys of Open WebUI. Everything stays on your network; there is no cloud service.
+In the other direction it gives the gateway what its household reviews need: a read-only view of the entities you exposed to Assist (`GET /api/oikos`) and the household events it pushes (arrivals and departures, doors left open, devices that go offline).
 
-**Version 3.0.0.** This is an independent community project, not an official Home Assistant or Open WebUI integration. The old direct Open WebUI mode still works in 3.0.0 but is [deprecated](#direct-open-webui-mode-deprecated).
+**Nothing else is needed in Home Assistant.** No OpenAI STT/TTS integrations, no extra components or add-ons, no API keys of Open WebUI. Everything stays on your network; there is no cloud service.
+
+**Version 3.0.1.** This is an independent community project, not an official Home Assistant or Open WebUI integration. The old direct Open WebUI mode still works in 3.0.0 but is [deprecated](#direct-open-webui-mode-deprecated).
 
 ## Setup in three steps
 
@@ -33,19 +35,27 @@ The gateway runs in **open mode** by default: requests from your network need no
 
 When the gateway's **Require tokens** setting is on, create an API client of kind `ha` in the gateway dashboard (**API clients → Create client**) and paste its token. The token is shown only once. Home Assistant sends `Authorization: Bearer <token>` only when a token is configured.
 
-The test step tells you which mode the gateway is in. If the gateway later starts requiring tokens, or revokes yours, Home Assistant asks for a new token (reauthentication) and keeps the entry and its Assist selection.
+The test step tells you which mode the gateway is in. If the gateway later starts requiring tokens, revokes yours, or answers that the token lacks the `assistant:turns` scope (403), Home Assistant asks for a new token (reauthentication) and keeps the entry and its Assist selection.
+
+Household events use their own token: an API client of kind `events`. Enter it under **Configure → Household events** only when the gateway requires tokens; in open mode the events are sent without one.
 
 To change the URL, token or language later, use **Reconfigure** on the integration entry. The test step runs again before anything is saved.
 
 ## Options
 
-**Configure** on the integration entry has three settings:
+**Configure** on the integration entry has three settings, plus a collapsed **Household events** section:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| Turn timeout | 120 seconds | How long Home Assistant waits for an answer. Sent as `timeout_s`; the gateway's profile can only shorten it. |
+| Turn timeout | 120 seconds | How long Home Assistant waits for an answer. Sent as `timeout_s`; the gateway's profile can only shorten it. If it passes after the gateway accepted the request, Home Assistant asks for the answer for up to this long again. |
 | Voice | empty | Text-to-speech voice. Empty uses the gateway's speech profile voice. |
 | Audio format | MP3 | The container the gateway returns: MP3, WAV or Opus (Ogg). Home Assistant converts it for your satellites when they need another format. |
+| Household events → Send events to the gateway | on | Push the [household events](#household-events) below. |
+| Household events → Persons | empty | Whose arrivals and departures are sent, also when not exposed to Assist. Empty: every person exposed to Assist. |
+| Household events → Door open too long after | 10 minutes | A door, window or garage door sensor open this long sends `door_open_long`. |
+| Household events → Device unavailable after | 2 minutes | An exposed entity unavailable this long sends `device_unavailable`. |
+| Household events → Every state change | off | Also send `state_changed` for every exposed entity. Only for a small exposed set: the gateway rate limits events. |
+| Household events → Events token | empty | An `events` API client token, needed only when the gateway requires tokens. |
 
 Model, tools, memory, thinking, chat history and who is speaking are decided by the gateway, not here.
 
@@ -62,7 +72,7 @@ flowchart LR
 
 ### Speech-to-text
 
-The recording is uploaded as a WAV file (OpenAI multipart: `file`, `model`, `language`) in the language you configured. The gateway identifies the speaker and repairs the transcript. Home Assistant uses the **repaired transcript** when the gateway returns one (`fixed_greek`, the historical name of that field), otherwise `text`.
+The recording is uploaded as a WAV file (OpenAI multipart: `file`, `model`, `language`) in the Assist pipeline's language (its base code, for example `en` for `en-US`), or the language you configured when the pipeline has none. The gateway identifies the speaker. Home Assistant uses the transcript's `plain_text`, otherwise `text`. It never uses the repaired household-language text (`fixed_greek`): the gateway matches the turn that follows against `text`/`plain_text` to know who spoke and which language to answer in.
 
 ### Conversation
 
@@ -83,7 +93,7 @@ Home Assistant sends the text, its conversation ID, the language, the satellite'
 
 Fields without a value are left out. When Assist names only the satellite entity, its device and area come from the entity, device and area registries.
 
-- **Long turns.** If the gateway answers `still_running` with a `turn_id`, Home Assistant polls `GET /assistant/v1/turns/{turn_id}` every second until the answer is ready or the turn timeout passes. Then you hear "I'm still working on that": the request may still finish and act, so don't repeat it. Nothing is retried automatically.
+- **Long turns.** When the turn timeout passes after the gateway accepted the request, the gateway answers `504` with `still_running: true` and a `turn_id`, and keeps waiting. Home Assistant then asks `GET /assistant/v1/turns/{turn_id}` every 2 seconds for up to the turn timeout. A finished turn is spoken as usual; a failed one speaks its error. If the turn is unknown or expired (404), the follow-up fails, or the time runs out, you hear "I'm still working on that": the request may still finish and act, so don't repeat it. The request itself is never sent twice.
 - **Follow-ups.** Home Assistant's conversation ID maps to the gateway conversation the reply names. When the gateway starts a new chat (`new_chat`), the mapping is replaced. Mappings are kept in memory for the 256 most recent conversations.
 - **Listening again.** When the gateway answers `expects_reply: true` (the answer asks a question), the satellite keeps listening. Say **"let's talk"** to keep listening after statements for the current session, and **"end conversation"**, "stop talking" or "that's all" to stop.
 - **Speech and display.** Assist speaks the gateway's TTS-ready `speech_text` and shows `display_text` in the chat.
@@ -91,6 +101,25 @@ Fields without a value are left out. When Assist names only the satellite entity
 ### Text-to-speech
 
 Home Assistant sends `{model, input, voice, response_format}` to `/v1/audio/speech` with your configured voice and format and plays the returned audio. The gateway translates from English into its speech profile's language when needed.
+
+## Household events
+
+The gateway's household reviews read the house through this integration and receive its events. Both use only the entities you exposed to Assist (**Settings → Voice assistants → Expose**).
+
+**Exposed entities.** `GET /api/oikos` answers the exposed entities: `{"assistant", "count", "entities": [...], "push": {...}}`. Each entity has `entity_id`, `name`, `aliases`, `domain`, `state`, `available` and, as asked, `area_name` (the entity's area, else its device's), compact `capabilities`, `actions` hints and executable `services`. The gateway calls `?area=1&caps=1&assistant=conversation`; `slim=1` gives only names and areas, `attrs=1` full attributes. It is read-only and needs a Home Assistant token, which you set in the gateway.
+
+**Events.** Home Assistant posts each event to the gateway's `POST /household/v1/events`:
+
+| Type | When | Priority |
+| --- | --- | --- |
+| `person_arrived_home` | a tracked person changes to `home` | normal |
+| `person_left_home` | a tracked person changes from `home` to anything else | normal |
+| `door_open_long` | an exposed door, window, garage door or opening sensor stays open for the configured time | high |
+| `device_unavailable` | an exposed entity stays `unavailable` for the configured time | normal |
+| `device_available` | it comes back (only after a `device_unavailable`) | low |
+| `state_changed` | only with **Every state change**: an exposed entity's state changed | low |
+
+Each event has a deterministic `event_id` made from its type, entity and the time of the state change, so a retried event is a duplicate at the gateway, never a second one. Attribute-only updates, zone-to-zone moves and changes through `unavailable`/`unknown` are not sent; pictures, URLs, tokens, locations and network addresses never leave Home Assistant. Delivery: 5 s timeout, up to 3 attempts (2 s and 8 s apart) on timeouts, connection errors, 408, 429 and 5xx; a rate-limited answer is retried once after 60 s. The queue is in memory (200 events). Problems are logged at most once a minute.
 
 ## Errors you may hear
 
@@ -106,7 +135,7 @@ Every gateway error code maps to a translated message. A code newer than this ve
 
 ## Diagnostics and logs
 
-**Download diagnostics** on the integration entry shows a live gateway check (status, version, open mode, unavailable subsystems), whether a token is configured, the language and options, the number of mapped conversations, the last turn's timings and its identity confidence. It never contains the URL or the token.
+**Download diagnostics** on the integration entry shows a live gateway check (status, version, open mode, unavailable subsystems), whether a token is configured, the language and options, the household event counts (sent, failed, rate limited, filtered, queued) and whether an events token is set, the number of mapped conversations, the last turn's timings and its identity confidence. It never contains the URL or a token.
 
 For debug logs:
 
@@ -128,10 +157,12 @@ Logs never contain prompts, transcripts, answers or the token.
 | The satellite says nothing or plays silence | Check the gateway's speech engines in its dashboard. The gateway answers silence for short command acknowledgements on purpose. |
 | Speech is recognized but the wrong person is greeted | The gateway matches the transcript to the speaker it identified. Two satellites hearing the same sentence at once can swap speakers. |
 | "I'm still working on that" often | Raise the turn timeout in **Configure**, and check the gateway profile's completion timeout. |
+| The gateway sees no entities | Expose them to Assist. The gateway needs a Home Assistant token to read `/api/oikos`. |
+| Household events do not arrive | Check the push counts in diagnostics. A `401` means the gateway requires tokens: enter an `events` token under **Configure → Household events**. |
 
 ## Security
 
-Keep the gateway on your LAN. In open mode anyone on your network can use it as the household owner; turn on **Require tokens** in the gateway if that is not wanted, and give Home Assistant an `ha` token. Use HTTPS when the gateway is reached across an untrusted network. See [SECURITY.md](SECURITY.md).
+Keep the gateway on your LAN. In open mode anyone on your network can use it as the household owner; turn on **Require tokens** in the gateway if that is not wanted, and give Home Assistant an `ha` token and an `events` token. `/api/oikos` is read-only and requires a Home Assistant token. Use HTTPS when the gateway is reached across an untrusted network. See [SECURITY.md](SECURITY.md).
 
 ## Updating from 2.x
 

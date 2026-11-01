@@ -104,6 +104,7 @@ class Gateway:
         self.polls: list[tuple[int, object]] = []
         self.health_reply: tuple[int, object] = (200, HEALTH)
         self.probe_reply: tuple[int, object] | None = None
+        self.token_probe_reply: tuple[int, object] | None = None
         self.require_tokens = False
         self.stt_reply: tuple[int, object] = (200, {"text": "hello"})
         self.speech_reply = b"ID3-fake-mp3"
@@ -142,7 +143,10 @@ class Gateway:
 
     def poll(self, request: httpx.Request) -> httpx.Response:
         self.record(request, None)
-        return self.respond(self.polls.pop(0))
+        reply = self.polls.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return self.respond(reply)
 
     def health(self, request: httpx.Request) -> httpx.Response:
         self.record(request, None)
@@ -153,6 +157,8 @@ class Gateway:
         self.record(request, None)
         if self.probe_reply:
             return self.respond(self.probe_reply)
+        if self.token_probe_reply and request.headers.get("Authorization"):
+            return self.respond(self.token_probe_reply)
         if self.require_tokens and (
             request.headers.get("Authorization") != f"Bearer {TOKEN}"
         ):
@@ -204,8 +210,24 @@ def client(gateway, http):
 
 @pytest.fixture
 def fast_polling(monkeypatch):
-    """Poll without waiting a whole second."""
+    """Poll without waiting two seconds."""
     monkeypatch.setattr(gateway_module, "POLL_INTERVAL_S", 0.01)
+
+
+def still_running(turn_id: str | None = "t-1", **fields) -> tuple[int, dict]:
+    """Answer like the gateway when an accepted turn passed its deadline (504)."""
+    error = {
+        "code": "timeout",
+        "message": "The assistant is still working on that.",
+        "still_running": True,
+        **fields,
+    }
+    if turn_id:
+        error["turn_id"] = turn_id
+    return 504, {"error": error}
+
+
+RUNNING = (202, {"turn_id": "t-1", "status": "running"})
 
 
 async def test_turn_request_and_reply(client, gateway):
@@ -239,7 +261,6 @@ async def test_turn_request_and_reply(client, gateway):
         expects_reply=True,
         conversation_id=CONVERSATION,
         new_chat=True,
-        still_running=False,
         confidence="verified",
         timings=REPLY["timings"],
     )
@@ -301,22 +322,18 @@ def test_body_fits_gateway_limits():
     assert "area" not in build_turn_body("Hi", area="   ")
 
 
-async def test_still_running_turn_is_polled(client, gateway, fast_polling):
-    """A 200 with still_running is polled at /turns/{turn_id} until it finishes."""
-    gateway.turn_reply = (
-        200,
-        {"still_running": True, "turn_id": "t/1", "conversation_id": "gw-9"},
-    )
-    # Later answers may leave out the turn and conversation the first one named.
-    final = {key: value for key, value in REPLY.items() if key != "conversation_id"}
+async def test_still_running_turn_is_followed_up(client, gateway, fast_polling):
+    """The 504 envelope's turn_id is polled at /turns/{turn_id} until it is done."""
+    gateway.turn_reply = still_running("t/1", conversation_id="gw-9")
     gateway.polls = [
-        (200, {"still_running": True}),
-        (200, {**final, "still_running": False}),
+        (202, {"turn_id": "t/1", "status": "running"}),
+        (200, {"turn_id": "t/1", "status": "done", "result": REPLY}),
     ]
     result = await client.async_turn("Run the long task", conversation_id=CONVERSATION)
     assert result.display_text == REPLY["display_text"]
-    assert result.still_running is False
-    assert result.conversation_id == client.conversations[CONVERSATION] == "gw-9"
+    assert result.speech_text == REPLY["speech_text"]
+    assert result.expects_reply is True
+    assert client.conversations[CONVERSATION] == CONVERSATION
     paths = [r["path"] for r in gateway.requests]
     assert paths == [
         "/assistant/v1/turns",
@@ -326,32 +343,79 @@ async def test_still_running_turn_is_polled(client, gateway, fast_polling):
     assert gateway.requests[-1]["headers"]["Authorization"] == f"Bearer {TOKEN}"
 
 
-async def test_polling_stops_at_the_local_deadline(gateway, http, fast_polling):
-    """Past timeout_s plus transport slack the turn is reported as still running."""
-    client = GatewayClient(gateway.url, TOKEN, http, timeout=0.05)
-    running = (200, {"still_running": True, "turn_id": "t1"})
-    gateway.turn_reply = running
-    gateway.polls = [running] * 100
+async def test_followed_up_answer_without_conversation(client, gateway, fast_polling):
+    """A result without conversation_id keeps the one the 504 envelope named."""
+    gateway.turn_reply = still_running(conversation_id="gw-9")
+    final = {key: value for key, value in REPLY.items() if key != "conversation_id"}
+    gateway.polls = [(200, {"status": "done", "result": final})]
+    result = await client.async_turn("Run the long task", conversation_id="ha-1")
+    assert result.conversation_id == client.conversations["ha-1"] == "gw-9"
+
+
+async def test_polling_stops_after_the_turn_timeout(gateway, http, fast_polling):
+    """Polling lasts at most the turn timeout; the turn is never resubmitted."""
+    client = GatewayClient(gateway.url, TOKEN, http, timeout=5)
+    gateway.turn_reply = still_running()
+    gateway.polls = [RUNNING] * 1000
     with pytest.raises(TurnStillRunning) as caught:
         await client.async_turn("Open the garage", conversation_id="c-9", timeout_s=0.1)
     assert caught.value.conversation_id == "c-9"
-    assert 1 <= len(gateway.polls) < 100  # polled, then gave up; never resubmitted
+    assert 1 <= 1000 - len(gateway.polls) < 1000
     assert [r["path"] for r in gateway.requests].count("/assistant/v1/turns") == 1
 
 
 async def test_still_running_without_turn_id(client, gateway, fast_polling):
     """Nothing to poll: the accepted turn may still act, so say so."""
-    gateway.turn_reply = (200, {"still_running": True, "conversation_id": "c-2"})
-    with pytest.raises(TurnStillRunning):
+    gateway.turn_reply = still_running(None, conversation_id="c-2")
+    with pytest.raises(TurnStillRunning) as caught:
         await client.async_turn("Hi", conversation_id="c-2")
+    assert caught.value.turn_id is None
+    assert [r["path"] for r in gateway.requests] == ["/assistant/v1/turns"]
 
 
-async def test_failed_poll_turns_into_mapped_error(client, gateway, fast_polling):
-    """A turn that fails while polled raises the gateway's error."""
-    gateway.turn_reply = (200, {"still_running": True, "turn_id": "t1"})
-    gateway.polls = [(502, {"error": {"code": "agent_failed", "message": "No."}})]
-    with pytest.raises(AgentFailedError):
+async def test_failed_turn_raises_its_error(client, gateway, fast_polling):
+    """A followed-up turn that failed raises the gateway's error."""
+    gateway.turn_reply = still_running()
+    gateway.polls = [
+        RUNNING,
+        (
+            200,
+            {
+                "turn_id": "t-1",
+                "status": "failed",
+                "error": {"code": "agent_failed", "message": "No answer."},
+            },
+        ),
+    ]
+    with pytest.raises(AgentFailedError) as caught:
         await client.async_turn("Hi", conversation_id="c-3")
+    assert caught.value.server_message == "No answer."
+    gateway.turn_reply = still_running()
+    gateway.polls = [(200, {"status": "failed"})]
+    with pytest.raises(GatewayError):
+        await client.async_turn("Hi", conversation_id="c-3")
+
+
+@pytest.mark.parametrize(
+    "poll",
+    [
+        (404, {"error": {"code": "turn_not_found", "message": "Expired."}}),
+        httpx.ConnectError("refused"),
+        (502, "<html>Bad Gateway</html>"),
+        (401, UNAUTHORIZED),
+        (200, {"status": "something new"}),
+    ],
+)
+async def test_polling_not_possible_is_still_running(
+    client, gateway, fast_polling, poll
+):
+    """An unknown or expired turn, or a failed follow-up: it may still act."""
+    gateway.turn_reply = still_running(conversation_id="c-4")
+    gateway.polls = [poll]
+    with pytest.raises(TurnStillRunning) as caught:
+        await client.async_turn("Hi", conversation_id="c-4")
+    assert caught.value.conversation_id == "c-4"
+    assert [r["path"] for r in gateway.requests].count("/assistant/v1/turns") == 1
 
 
 async def test_conversation_mapping_and_new_chat(client, gateway):
@@ -485,6 +549,7 @@ async def test_timeout_after_acceptance_is_still_running(client, gateway):
     assert isinstance(caught.value, CompletionTimeout)
     assert caught.value.key == "still_running" and caught.value.still_running
     assert caught.value.conversation_id == "g-7d1c"
+    assert caught.value.turn_id is None
 
     gateway.turn_reply = (504, {"error": {"code": "timeout", "message": "Slow."}})
     with pytest.raises(CompletionTimeout) as caught:
@@ -567,11 +632,32 @@ async def test_check_in_open_mode(client, gateway):
         status="degraded", version="18.0.0", degraded=["tts"], open_mode=True
     )
     assert client.last_status == status
-    health, probe = gateway.requests
+    health, probe, token_probe = gateway.requests
     assert health["path"] == "/health"
-    assert probe["path"] == "/assistant/v1/conversations/ha-auth-probe"
+    assert (
+        probe["path"]
+        == token_probe["path"]
+        == ("/assistant/v1/conversations/ha-auth-probe")
+    )
     assert "Authorization" not in health["headers"]
     assert "Authorization" not in probe["headers"]
+    # A configured token is checked in open mode too (its scope may be missing).
+    assert token_probe["headers"]["Authorization"] == f"Bearer {TOKEN}"
+
+
+async def test_check_in_open_mode_without_token(gateway, http):
+    """Open mode without a token: health and one tokenless probe."""
+    status = await GatewayClient(gateway.url, "", http).async_check()
+    assert status.open_mode is True
+    assert len(gateway.requests) == 2
+    assert all("Authorization" not in r["headers"] for r in gateway.requests)
+
+
+async def test_check_token_without_scope_is_forbidden(client, gateway):
+    """Open mode accepts no token, but a token without assistant:turns is a 403."""
+    gateway.token_probe_reply = (403, {"error": {"code": "forbidden"}})
+    with pytest.raises(GatewayForbidden):
+        await client.async_check()
 
 
 async def test_check_with_required_tokens(client, gateway):
@@ -618,16 +704,24 @@ async def test_check_errors(client, gateway, health, probe, error):
     ("reply", "text"),
     [
         (
-            {"text": "Billo: ανάψε το φως", "fixed_greek": "άναψε το φως"},
-            "άναψε το φως",
+            {
+                "text": "Alex: anapse to fos tis kouzinas",
+                "plain_text": "anapse to fos tis kouzinas",
+                "fixed_greek": "άναψε το φως της κουζίνας",
+            },
+            "anapse to fos tis kouzinas",
         ),
-        ({"text": "turn on the light", "fixed_greek": ""}, "turn on the light"),
+        (
+            {"text": "turn on the light", "fixed_greek": "άναψε το φως"},
+            "turn on the light",
+        ),
+        ({"text": "x", "plain_text": "  "}, "x"),
         ({"text": "  turn on the light  "}, "turn on the light"),
-        ({"text": ""}, ""),
+        ({"text": "", "fixed_greek": "άναψε"}, ""),
     ],
 )
 async def test_transcription(client, gateway, reply, text):
-    """Multipart upload; the repaired transcript wins over the plain text."""
+    """Multipart upload; plain_text, then text, never the repaired fixed_greek."""
     gateway.stt_reply = (200, reply)
     result = await client.async_transcribe(
         b"RIFF-audio", language="el", filename="audio.wav", content_type="audio/wav"

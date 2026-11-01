@@ -54,6 +54,8 @@ class TurnStillRunning(CompletionTimeout):
 
     key = "still_running"
     still_running = True
+    # The id for ``GET /assistant/v1/turns/{turn_id}`` from the gateway's 504.
+    turn_id: str | None = None
 
 
 class ModelMissingError(OpenWebUIError):

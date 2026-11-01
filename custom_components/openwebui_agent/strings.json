@@ -135,16 +135,38 @@
     "step": {
       "init": {
         "title": "AI gateway",
-        "description": "The gateway decides the model, tools, memory, chat history and who is speaking. These settings only change how long Home Assistant waits and how answers sound.",
+        "description": "The gateway decides the model, tools, memory, chat history and who is speaking. These settings change how long Home Assistant waits, how answers sound, and which household events Home Assistant sends to the gateway.",
         "data": {
           "completion_timeout": "Turn timeout (seconds)",
           "tts_voice": "Voice",
           "tts_format": "Audio format"
         },
         "data_description": {
-          "completion_timeout": "How long Home Assistant waits for an answer. The gateway's profile can only shorten it. If it passes after the gateway accepted the request, you hear that it is still working.",
+          "completion_timeout": "How long Home Assistant waits for an answer. The gateway's profile can only shorten it. If it passes after the gateway accepted the request, Home Assistant asks for the answer every 2 seconds for up to this long again, then says it is still working.",
           "tts_voice": "Leave empty for the gateway's speech profile voice.",
           "tts_format": "The audio container the gateway returns. Home Assistant converts it for your satellites when needed."
+        },
+        "sections": {
+          "household": {
+            "name": "Household events",
+            "description": "The gateway's household reviews read the entities you exposed to Assist and receive these events from Home Assistant. Only exposed entities are watched.",
+            "data": {
+              "events": "Send events to the gateway",
+              "presence": "Persons",
+              "door_open_after": "Door open too long after",
+              "unavailable_after": "Device unavailable after",
+              "generic_state_changes": "Every state change",
+              "gateway_events_token": "Events token (optional)"
+            },
+            "data_description": {
+              "events": "Arrivals and departures, doors left open, and devices that go unavailable or come back.",
+              "presence": "Whose arrivals and departures are sent, also when not exposed. Empty: every person exposed to Assist.",
+              "door_open_after": "A door, window or garage door sensor that stays open this long sends an event.",
+              "unavailable_after": "An exposed entity that stays unavailable this long sends an event.",
+              "generic_state_changes": "Also send every state change of the exposed entities. Only for a small exposed set: the gateway rate limits events.",
+              "gateway_events_token": "Leave empty while the gateway runs in open mode. When it requires tokens, create an API client of kind events in the gateway dashboard and paste its token."
+            }
+          }
         }
       },
       "agent": {

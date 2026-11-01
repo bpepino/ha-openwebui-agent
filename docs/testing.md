@@ -1,18 +1,21 @@
 # Manual acceptance tests
 
-## Gateway mode (3.0.0)
+## Gateway mode (3.0.1)
 
-These need a running AI gateway on your LAN and an Assist satellite (or the Assist dialog with a microphone). They have not been run against a live gateway as part of the 3.0.0 change; the automated tests simulate the gateway at the HTTP layer. Record the integration, Home Assistant and gateway versions with your results.
+These need a running AI gateway on your LAN and an Assist satellite (or the Assist dialog with a microphone). They have not been run against a live gateway as part of the 3.0.x changes; the automated tests simulate the gateway at the HTTP layer. Record the integration, Home Assistant and gateway versions with your results.
 
 1. **Open mode setup.** Add the integration, choose **AI gateway**, enter the gateway URL and leave the token empty. The test step must show the version the gateway dashboard shows, and "open mode". Submit: one **AI gateway** device appears with a conversation, a speech-to-text and a text-to-speech entity.
 2. **Tokens required.** Turn on **Require tokens** in the gateway and reload the entry. Home Assistant must ask for a token. A wrong token stays on the form with an error; the token of an API client of kind `ha` is accepted and the entry loads. Turn the setting off again if you use open mode.
 3. **Whole pipeline.** In **Settings → Voice assistants** select **AI gateway** as conversation agent, speech-to-text and text-to-speech, and turn off **Prefer handling commands locally**. Say "Turn on the office light." The gateway's request log must show one transcription, one turn carrying the satellite's device and area, and one speech request with the configured voice and format. The light must actually change.
-4. **Repaired transcript.** Speak a sentence in the household language that the gateway repairs. The Assist pipeline debug view must show the repaired text, and the gateway must greet or attribute the identified speaker.
+4. **Transcript and speaker.** Speak a sentence in the household language. The Assist pipeline debug view must show the transcript's `plain_text` (not the repaired `fixed_greek`), the gateway's transcription log must show the pipeline's language as a base code (`en`, not `en-US`), and the gateway must greet or attribute the identified speaker on the turn that follows.
 5. **Follow-up.** Ask something that makes the agent ask back. The satellite must listen again without a wake word. Answer; the gateway must continue the same conversation (same chat in Open WebUI).
-6. **Long turn.** Set the turn timeout to 10 seconds and ask for something slow. You must hear "I'm still working on that", and the gateway must receive the turn only once. With a gateway that answers `still_running` with a `turn_id`, its request log shows one poll per second until the answer.
+6. **Long turn.** Set the turn timeout to 10 seconds and ask for something that takes about 15 seconds. The gateway must receive the turn only once, answer `504` with a `turn_id`, and then show `GET /assistant/v1/turns/{turn_id}` about every 2 seconds until the answer, which Assist speaks. Ask for something that takes longer than 20 seconds: you must hear "I'm still working on that", and the gateway must still finish the turn.
 7. **Options.** Change the voice and the audio format in **Configure**. The next answer must use them; a sentence spoken before must not replay in the old voice.
 8. **Failures.** Stop the gateway: Assist must say it can't reach the gateway, and a Home Assistant restart must keep retrying the entry instead of asking for a token. Start the gateway again: the entry recovers.
-9. **Diagnostics.** Download diagnostics: they must show the gateway's version and access mode and contain neither the URL nor the token.
+9. **Diagnostics.** Download diagnostics: they must show the gateway's version and access mode and the household event counts, and contain neither the URL nor any token.
+10. **Token scope.** Give the entry the token of a client without the `assistant:turns` scope. Reloading must ask for a token (reauthentication), not retry forever.
+11. **Exposed entities.** Expose a light in an area and leave a switch unexposed. `curl -H "Authorization: Bearer <HA token>" "http://<home-assistant>:8123/api/oikos?area=1&caps=1&assistant=conversation"` must list the light with its area name and not the switch. The gateway's household page must show the same entities.
+12. **Household events.** Let a person tracked under **Configure → Household events** come home: the gateway's event log must show one `person_arrived_home` whose `event_id` starts with `ha-person_arrived_home-`. Leave an exposed door open longer than the configured time: one `door_open_long`. In open mode the request carries no `Authorization` header; with **Require tokens** on, events need an `events` token, and without one diagnostics count them as failed with HTTP 401.
 
 ## Direct Open WebUI mode (deprecated)
 

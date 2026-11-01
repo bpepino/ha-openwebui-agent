@@ -9,7 +9,9 @@ translations keep working.
 The token is optional: in the gateway's open mode (its default) requests need
 none, so the ``Authorization`` header is sent only when a token is configured.
 
-No retries: an accepted turn may act on the real world.
+No retries: an accepted turn may act on the real world. A turn whose
+deadline passed after the gateway accepted it (504 ``still_running`` with a
+``turn_id``) is followed up at ``GET /assistant/v1/turns/{turn_id}``.
 """
 
 from __future__ import annotations
@@ -68,7 +70,7 @@ SPEECH_PATH = "/v1/audio/speech"
 STT_MODEL = "whisper-1"
 TTS_MODEL = "tts-1"
 VOICE_TIMEOUT_S = 60
-POLL_INTERVAL_S = 1.0
+POLL_INTERVAL_S = 2.0
 MAX_CONVERSATIONS = 256
 
 # Limits of the gateway's TurnBody. Values outside them would turn a whole
@@ -122,9 +124,6 @@ class TurnResult:
     expects_reply: bool
     conversation_id: str | None
     new_chat: bool = False
-    # A returned result is never still running: polling waits for the answer,
-    # and a deadline that passes after acceptance raises TurnStillRunning.
-    still_running: bool = False
     confidence: str | None = None
     timings: dict[str, float] = field(default_factory=dict)
 
@@ -216,10 +215,15 @@ def health_status(data: Any) -> GatewayStatus | None:
 
 
 def transcript_text(data: Any) -> str:
-    """Return the repaired transcript when the gateway made one, else the text."""
+    """Return ``plain_text``, else ``text``; never ``fixed_greek``.
+
+    The gateway identifies the speaker and picks the answer language by
+    matching the turn text against ``text``/``plain_text``; ``fixed_greek`` is
+    the repaired household-language text and would break that match.
+    """
     if not isinstance(data, dict):
         raise NotGatewayError("Transcription reply is not a JSON object")
-    for key in ("fixed_greek", "text"):
+    for key in ("plain_text", "text"):
         value = data.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
@@ -269,6 +273,9 @@ def error_from_response(
     cls = ERROR_CLASSES.get(code)
     if code == "timeout" and envelope.get("still_running") is True:
         err: OpenWebUIError = TurnStillRunning("Accepted turn exceeded its deadline")
+        turn_id = envelope.get("turn_id")
+        if isinstance(turn_id, str) and turn_id:
+            err.turn_id = turn_id
     elif cls is None:
         LOGGER.debug("Unknown gateway error code %s (HTTP %s)", code, status)
         err = _error_from_status(
@@ -428,17 +435,18 @@ class GatewayClient:
     async def async_check(self) -> GatewayStatus:
         """Health plus access: open mode, or a token the gateway accepts.
 
-        In open mode the gateway accepts any token, so there is nothing more to
-        validate. Otherwise a missing token and a rejected one are reported
-        separately; both start Home Assistant's reauthentication.
+        A configured token is always tried, also in open mode: a token without
+        the ``assistant:turns`` scope answers 403 (``GatewayForbidden``). A
+        missing token and a rejected one are reported separately; all three
+        start Home Assistant's reauthentication.
         """
         status = await self.async_health()
         status.open_mode = await self._async_accepted(token=False)
-        if not status.open_mode:
-            if not self._token:
-                raise TokenRequired("The gateway requires a token")
+        if self._token:
             if not await self._async_accepted(token=True):
                 raise GatewayUnauthorized("The gateway rejected the token")
+        elif not status.open_mode:
+            raise TokenRequired("The gateway requires a token")
         self.last_status = status
         return status
 
@@ -462,7 +470,7 @@ class GatewayClient:
         extra_instructions: str | None = None,
         timeout_s: float | None = None,
     ) -> TurnResult:
-        """Run one turn for HA's ``conversation_id``; poll while it is still running."""
+        """Run one turn for HA's ``conversation_id``; follow it up after a 504."""
         if self._closed:
             raise GatewayUnreachable("Integration is unloading")
         body = build_turn_body(
@@ -482,24 +490,26 @@ class GatewayClient:
             "yes" if self._token else "no",
         )
         sent_id = body.get("conversation_id")
-        # The gateway enforces timeout_s itself; allow transport slack so its
-        # own still_running answer arrives first.
-        deadline = monotonic() + body.get("timeout_s", DEFAULT_TURN_TIMEOUT_S)
-        deadline += self.timeout
+        turn_timeout = body.get("timeout_s", DEFAULT_TURN_TIMEOUT_S)
         task = asyncio.current_task()
         if task:
             self._tasks.add(task)
-        turn_id = None
         try:
-            data = await self._async_turn_reply(
-                "POST", TURNS_PATH, sent_id, deadline - monotonic(), json=body
-            )
-            if isinstance(data.get("conversation_id"), str):
-                sent_id = data["conversation_id"] or sent_id
-            while data.get("still_running") is True:
-                # Later poll answers may leave out what the first one named.
-                turn_id = data.get("turn_id") or turn_id
-                data = await self._async_poll(turn_id, sent_id, deadline)
+            try:
+                # The gateway enforces timeout_s itself; allow transport slack
+                # so its own 504 still_running answer arrives first.
+                data = await self._async_turn_reply(
+                    "POST", TURNS_PATH, sent_id, turn_timeout + self.timeout, json=body
+                )
+            except TurnStillRunning as err:
+                if not err.turn_id:
+                    raise
+                # The gateway keeps waiting for the accepted turn; ask for its
+                # answer for at most the turn timeout.
+                sent_id = err.conversation_id or sent_id
+                data = await self._async_poll(
+                    err.turn_id, sent_id, monotonic() + turn_timeout
+                )
         finally:
             if task:
                 self._tasks.discard(task)
@@ -534,25 +544,49 @@ class GatewayClient:
         return data
 
     async def _async_poll(
-        self, turn_id: Any, sent_id: str | None, deadline: float
+        self, turn_id: str, sent_id: str | None, deadline: float
     ) -> dict[str, Any]:
-        """Wait one interval, then read the accepted turn's state again."""
-        if not isinstance(turn_id, str) or not turn_id:
-            raise _still_running(sent_id, "Still running without a turn_id")
-        if monotonic() + POLL_INTERVAL_S >= deadline:
-            raise _still_running(sent_id, "Accepted turn exceeded the local deadline")
-        await asyncio.sleep(POLL_INTERVAL_S)
-        LOGGER.debug("Gateway turn still running; polling")
-        try:
-            return await self._async_turn_reply(
-                "GET",
-                f"{TURNS_PATH}/{quote(turn_id, safe='')}",
-                sent_id,
-                min(self.timeout, deadline - monotonic()),
-            )
-        except GatewayUnreachable:
-            # The turn was accepted; a failed poll does not mean it stopped.
-            raise _still_running(sent_id, "Polling failed") from None
+        """Ask for an accepted turn's answer every ``POLL_INTERVAL_S`` until ``deadline``.
+
+        202 ``running`` keeps polling; 200 ``done`` returns the answer and 200
+        ``failed`` raises the turn's error. Anything else (404: unknown or
+        expired turn, a lost connection, a proxy error) ends polling: the turn
+        may still act, so it is reported as still running.
+        """
+        path = f"{TURNS_PATH}/{quote(turn_id, safe='')}"
+        while monotonic() + POLL_INTERVAL_S < deadline:
+            await asyncio.sleep(POLL_INTERVAL_S)
+            LOGGER.debug("Gateway turn still running; polling")
+            try:
+                response = await self._send(
+                    "GET",
+                    path,
+                    total=max(0.1, min(self.timeout, deadline - monotonic())),
+                    ok_statuses=(200, 202),
+                    conversation_id=sent_id,
+                )
+            except OpenWebUIError:
+                raise _still_running(sent_id, "Polling stopped") from None
+            data = _json(response)
+            state = data.get("status") if isinstance(data, dict) else None
+            if response.status_code == 202 or state == "running":
+                continue
+            if state == "done" and isinstance(data.get("result"), dict):
+                return data["result"]
+            if state == "failed":
+                envelope = data.get("error")
+                if not isinstance(envelope, dict) or not isinstance(
+                    envelope.get("code"), str
+                ):
+                    raise GatewayError("The turn failed without an error code")
+                raise error_from_response(
+                    response.status_code,
+                    {"error": envelope},
+                    submitted=True,
+                    conversation_id=sent_id,
+                )
+            raise _still_running(sent_id, "Unexpected follow-up answer")
+        raise _still_running(sent_id, "Accepted turn exceeded the local deadline")
 
     async def async_transcribe(
         self,
@@ -562,7 +596,7 @@ class GatewayClient:
         filename: str = "audio.wav",
         content_type: str = "audio/wav",
     ) -> str:
-        """``POST /v1/audio/transcriptions``: the repaired transcript, else the text."""
+        """``POST /v1/audio/transcriptions``: ``plain_text``, else ``text``."""
         form = {"model": STT_MODEL, "response_format": "json"}
         if language := gateway_language(language):
             form["language"] = language

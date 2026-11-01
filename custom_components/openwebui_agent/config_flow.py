@@ -2,8 +2,9 @@
 
 Gateway: the URL, an optional token and the language, then a test step that
 shows the gateway's version and whether it runs in open mode. Options: the turn
-timeout and the text-to-speech voice and format. The gateway owns the model,
-tools, features, identity, chat history and the voice pipeline.
+timeout, the text-to-speech voice and format, and the household events pushed
+to the gateway. The gateway owns the model, tools, features, identity, chat
+history and the voice pipeline.
 
 Direct Open WebUI mode keeps its discovery and agent steps for one more release.
 """
@@ -30,6 +31,7 @@ from .const import (
     BACKEND_OPENWEBUI,
     BACKENDS,
     CONF_BACKEND,
+    CONF_EVENTS_TOKEN,
     CONF_GATEWAY_TOKEN,
     CONF_GATEWAY_URL,
     CONF_LANGUAGE,
@@ -40,6 +42,7 @@ from .const import (
     GATEWAY_DEFAULT_OPTIONS,
     GATEWAY_OPTIONS,
     GATEWAY_TITLE,
+    HOUSEHOLD_SECTION,
     NAME,
     default_language,
     entry_backend,
@@ -371,13 +374,21 @@ class OpenWebUIOptionsFlow(AgentFlow, config_entries.OptionsFlow):
         self._initialize(dict(entry.data), dict(entry.options))
 
     async def async_step_init(self, user_input: dict | None = None):
-        """Gateway: turn timeout and voice. Direct: refreshed model and features."""
+        """Gateway: wait, voice and household events. Direct: model and features."""
         if entry_backend(self.connection) == BACKEND_OPENWEBUI:
             return await self.async_step_agent(user_input)
         if user_input is not None:
-            self.options.update(user_input)
-            # A cleared voice field means the gateway's speech profile voice.
+            household = dict(user_input[HOUSEHOLD_SECTION])
+            self.options.update(
+                {k: v for k, v in user_input.items() if k != HOUSEHOLD_SECTION}
+            )
+            self.options.update(household)
+            # A cleared voice field means the gateway's speech profile voice,
+            # a cleared events token sends events without one (open mode).
             self.options[CONF_TTS_VOICE] = user_input.get(CONF_TTS_VOICE, "").strip()
+            self.options[CONF_EVENTS_TOKEN] = household.get(
+                CONF_EVENTS_TOKEN, ""
+            ).strip()
             return self._finish()
         return self.async_show_form(
             step_id="init", data_schema=gateway_options_schema(self.options)

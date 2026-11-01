@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.0.1 — unreleased
+
+Fixes after an independent review of 3.0.0. Gateway entries only.
+
+- **Exposed entities and household events.** The gateway's household reviews read the entities you exposed to Assist at `GET /api/oikos` (read-only, needs a Home Assistant token; same query parameters and response shape as the gateway's former component, including `entities` and the `push` status) and receive household events from this integration at `POST /household/v1/events`: `person_arrived_home`, `person_left_home`, `door_open_long`, `device_unavailable`, `device_available` and, optionally, `state_changed`, each with a deterministic event ID, retries and throttled warnings. The event rules (`events.py`) are the gateway's pure module, unchanged. In open mode events are sent without a token; an `events` token is sent only when set. New collapsed **Household events** section in **Configure**: send events (on), persons, door open too long after (10 min), device unavailable after (2 min), every state change (off), events token. Diagnostics show the push counts and whether an events token is set, never the token. The manifest now depends on `http` and loads after `person`.
+- **Speech-to-text** returns `plain_text`, else `text`, and never the repaired `fixed_greek`: the gateway identifies the speaker and picks the answer language by matching the turn against `text`/`plain_text`. The upload uses the base code of the Assist pipeline's language (`en` for `en-US`), and the configured language only when the pipeline has none.
+- **Long turns** follow the gateway's contract: the `turn_id` comes from the 504 `still_running` envelope and `GET /assistant/v1/turns/{turn_id}` is asked every 2 s for at most the turn timeout. `done` speaks the result's `speech_text`, `failed` its error; 404 (unknown or expired turn), a failed follow-up or the end of the wait keep the "still working" answer. The guessed 200 `still_running` reply of 3.0.0 is gone.
+- **403 at setup** (a token without the `assistant:turns` scope) now starts reauthentication instead of endless retries. A configured token is checked in open mode too.
+- The gateway's `display_text` is shown as it is: it is already plain, so the second Markdown pass is skipped in gateway mode. The hidden 2.1.0 Strip Markdown option no longer applies to gateway entries.
+
+Validation: 238 tests passed on Linux with Python 3.14 and Home Assistant 2026.6.0 (`pytest-homeassistant-custom-component` 0.13.336): 193 portable tests (including the gateway's event-module tests, ported) and 45 Home Assistant fixture tests with respx simulating the gateway (`/api/oikos` with exposed and unexposed entities and area names, `person_arrived_home` with its deterministic ID, no `Authorization` header in open mode and an events token when set, retries on 5xx, `door_open_long` timers, clean unload, the 504 follow-up, 403 reauthentication). The portable tests also passed on Windows with Python 3.12. Ruff lint and format passed. Not run: hassfest, HACS validation, and any test against a live gateway.
+
 ## 3.0.0 — unreleased
 
 Home Assistant now talks only to the home AI gateway, through this one integration. Nothing else is needed in Home Assistant.

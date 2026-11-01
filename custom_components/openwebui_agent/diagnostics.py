@@ -9,7 +9,10 @@ from homeassistant.core import HomeAssistant
 from .const import (
     BACKEND_GATEWAY,
     BACKEND_OPENWEBUI,
+    CONF_EVENTS_TOKEN,
+    CONF_GENERIC_STATE_CHANGES,
     CONF_LANGUAGE,
+    CONF_PRESENCE,
     DEFAULT_OPTIONS,
     DOMAIN,
     FEATURES,
@@ -18,6 +21,8 @@ from .const import (
     entry_backend,
 )
 from .exceptions import OpenWebUIError
+from .oikos import DATA_PUSHERS, push_status
+from .push import push_config
 
 
 async def _async_gateway_diagnostics(hass: HomeAssistant, entry: ConfigEntry) -> dict:
@@ -28,6 +33,8 @@ async def _async_gateway_diagnostics(hass: HomeAssistant, entry: ConfigEntry) ->
         gateway = asdict(await client.async_check())
     except OpenWebUIError as err:
         gateway = {"error": err.key}
+    pusher = hass.data.get(DATA_PUSHERS, {}).get(entry.entry_id)
+    push = push_config(options)
     return {
         "integration_version": VERSION,
         "home_assistant_version": HA_VERSION,
@@ -39,9 +46,16 @@ async def _async_gateway_diagnostics(hass: HomeAssistant, entry: ConfigEntry) ->
         "tts_format": options["tts_format"],
         "tts_voice_configured": bool(options["tts_voice"]),
         "conversation_mode": options["conversation_mode"],
-        "strip_markdown": options["strip_markdown"],
         "timeout": options["timeout"],
         "verify_ssl": options["verify_ssl"],
+        "household_events": {
+            "push": pusher.status() if pusher else push_status(hass),
+            "events_token_configured": bool(options[CONF_EVENTS_TOKEN]),
+            "presence_count": len(options[CONF_PRESENCE]),
+            "door_open_after_s": push.door_open_after_s,
+            "unavailable_after_s": push.unavailable_after_s,
+            "generic_state_changes": options[CONF_GENERIC_STATE_CHANGES],
+        },
         "mapped_conversation_count": len(client.conversations),
         "last_identity_confidence": client.last_confidence,
         "last_turn_timing_ms": client.last_timings,

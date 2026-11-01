@@ -5,7 +5,7 @@ from logging import getLogger
 LOGGER = getLogger(__package__)
 DOMAIN = "openwebui_agent"
 NAME = "Open WebUI Agent"
-VERSION = "3.0.0"
+VERSION = "3.0.1"
 CONF_SERVICE_NAME = "service_name"
 CONF_BASE_URL = "base_url"
 CONF_API_KEY = "api_key"
@@ -52,16 +52,44 @@ DEFAULT_OPTIONS = {
     "code_interpreter": False,
     "image_generation": False,
 }
-# The gateway owns model, tools, features, thinking, history, polling and voice.
+# Household events pushed to the gateway (push.py).
+CONF_EVENTS = "events"
+CONF_PRESENCE = "presence"
+CONF_DOOR_OPEN_AFTER = "door_open_after"
+CONF_UNAVAILABLE_AFTER = "unavailable_after"
+CONF_GENERIC_STATE_CHANGES = "generic_state_changes"
+# An events client token, needed only when the gateway requires tokens.
+CONF_EVENTS_TOKEN = "gateway_events_token"
+HOUSEHOLD_SECTION = "household"
+HOUSEHOLD_OPTIONS = (
+    CONF_EVENTS,
+    CONF_PRESENCE,
+    CONF_DOOR_OPEN_AFTER,
+    CONF_UNAVAILABLE_AFTER,
+    CONF_GENERIC_STATE_CHANGES,
+    CONF_EVENTS_TOKEN,
+)
+# The gateway owns model, tools, features, thinking, history and voice.
 # Only GATEWAY_OPTIONS are shown; the rest keep values saved by 2.1.0 entries.
-GATEWAY_OPTIONS = (CONF_COMPLETION_TIMEOUT, CONF_TTS_VOICE, CONF_TTS_FORMAT)
+GATEWAY_OPTIONS = (
+    CONF_COMPLETION_TIMEOUT,
+    CONF_TTS_VOICE,
+    CONF_TTS_FORMAT,
+    *HOUSEHOLD_OPTIONS,
+)
 GATEWAY_DEFAULT_OPTIONS = {
     CONF_COMPLETION_TIMEOUT: 120,
     CONF_TTS_VOICE: "",
     CONF_TTS_FORMAT: "mp3",
+    CONF_EVENTS: True,
+    # Empty: every person exposed to Assist.
+    CONF_PRESENCE: [],
+    CONF_DOOR_OPEN_AFTER: {"hours": 0, "minutes": 10, "seconds": 0},
+    CONF_UNAVAILABLE_AFTER: {"hours": 0, "minutes": 2, "seconds": 0},
+    CONF_GENERIC_STATE_CHANGES: False,
+    CONF_EVENTS_TOKEN: "",
     CONF_TIMEOUT: 30,
     CONF_VERIFY_SSL: True,
-    CONF_STRIP_MARKDOWN: True,
     CONF_CONVERSATION_MODE: "questions",
 }
 # Languages the gateway's Whisper-based speech recognition understands.
