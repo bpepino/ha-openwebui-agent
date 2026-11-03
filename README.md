@@ -148,7 +148,7 @@ Each event has a deterministic `event_id` made from its type, entity and the tim
 
 ## Ask before acting (`openwebui_agent.ask_action`)
 
-From 3.3. An automation can propose an action without running it: the gateway checks it like any other plan (the entities must be exposed, the service must be one the gateway runs, levels, budgets, undo), asks on a voice satellite and runs it only on a yes. Home Assistant never runs it. The gateway store's question recipes (bedtime sweep, window open while heating or AC runs, water heater on too long) use it. The gateway needs **proactive questions** switched on; otherwise it refuses.
+From 3.3. An automation can propose an action without running it: the gateway checks it like any other plan (the entities must be exposed, the service must be one the gateway runs, levels, budgets, undo), asks on a voice satellite and runs it only on a yes. Home Assistant never runs it. The gateway store's question recipes (bedtime sweep, window open while heating or AC runs, water heater on too long) use it. The gateway needs **proactive questions** switched on (otherwise it refuses), and the integration needs a gateway token.
 
 ```yaml
 action: openwebui_agent.ask_action
@@ -168,7 +168,7 @@ data:
 | `area` | optional: an area id |
 | `context` | optional: up to 8 plain values kept in the gateway's log, never spoken |
 
-Nothing that still looks like a template is sent. The call goes to the gateway's `POST /household/v1/ask_action` with the gateway token (the one the assistant turns use; none in open mode). The gateway answers `asked`, `skipped` (quiet hours, nobody home, the satellite busy, nothing to turn off, the same question already waiting) or `refused` (for example an entity not exposed, a level-4 device, proactive questions off). A refusal fails the action, so the automation's trace shows the reason; the answer is the action's response. A no, or no answer on the satellite, drops it.
+Nothing that still looks like a template is sent. The call goes to the gateway's `POST /household/v1/ask_action` with the gateway token (the one the assistant turns use). **It needs a gateway token even in open mode** (from 3.3.1): a yes on the satellite runs the plan, so the gateway never takes it anonymously. Without a token the action fails in Home Assistant and nothing is sent; create a Home Assistant client token in the gateway and enter it with **Reconfigure**. The gateway answers `asked`, `skipped` (quiet hours, nobody home, the satellite busy, nothing to turn off, the same question already waiting) or `refused` (for example an entity not exposed, a level-4 device, proactive questions off). A refusal fails the action, so the automation's trace shows the reason; the answer is the action's response. A no, or no answer on the satellite, drops it.
 
 ## Errors you may hear
 

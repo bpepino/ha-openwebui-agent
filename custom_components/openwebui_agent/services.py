@@ -28,7 +28,7 @@ from .ask_action import (
     outcome_error,
 )
 from .const import BACKEND_GATEWAY, DOMAIN, LOGGER, VERSION, entry_backend
-from .exceptions import OpenWebUIError
+from .exceptions import OpenWebUIError, TokenRequired
 from .gateway_client import GatewayClient
 
 ASK_ACTION_SCHEMA = vol.Schema(
@@ -63,6 +63,11 @@ async def _async_ask_action(call: ServiceCall) -> ServiceResponse:
         raise ServiceValidationError(str(err)) from err
     try:
         answer = await client.async_ask_action(body)
+    except TokenRequired as err:
+        raise ServiceValidationError(
+            "ask_action needs a gateway token, also in open mode: create a Home "
+            "Assistant client token in the gateway and enter it in Reconfigure"
+        ) from err
     except OpenWebUIError as err:
         detail = getattr(err, "server_message", None) or type(err).__name__
         raise HomeAssistantError(

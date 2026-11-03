@@ -12,7 +12,7 @@ import pytest
 import respx
 
 from owui_protocol import ask_action as aa
-from owui_protocol.exceptions import InvalidRequestError
+from owui_protocol.exceptions import InvalidRequestError, TokenRequired
 from owui_protocol.gateway_client import GatewayClient
 
 URL = "http://gateway.test:8000"
@@ -151,6 +151,17 @@ async def test_a_body_the_gateway_rejects_is_an_error():
             },
         )
         async with httpx.AsyncClient() as http:
-            client = GatewayClient(URL, None, http, timeout=5)
+            client = GatewayClient(URL, TOKEN, http, timeout=5)
             with pytest.raises(InvalidRequestError):
                 await client.async_ask_action({"question": "x", "steps": []})
+
+
+async def test_without_a_gateway_token_nothing_is_sent():
+    """The gateway requires the token even in open mode (3.3.1): refuse before sending."""
+    with respx.mock(base_url=URL, assert_all_called=False) as mock:
+        route = mock.post("/household/v1/ask_action").respond(json={"status": "asked"})
+        async with httpx.AsyncClient() as http:
+            client = GatewayClient(URL, "  ", http, timeout=5)
+            with pytest.raises(TokenRequired):
+                await client.async_ask_action(aa.build_request(CALL, version="3.3.1"))
+    assert not route.called

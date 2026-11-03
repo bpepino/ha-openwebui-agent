@@ -1358,7 +1358,7 @@ async def test_ask_action_validates_and_forwards(hass, gateway):
     assert body["steps"] == [
         {"service": "light.turn_off", "entity_ids": ["light.kitchen"], "data": {}}
     ]
-    assert body["integration_version"] == "3.3.0" and body["request_id"]
+    assert body["integration_version"] == "3.3.1" and body["request_id"]
     assert hass.states.get("light.kitchen").state == "on"
     with pytest.raises(ServiceValidationError):
         await hass.services.async_call(

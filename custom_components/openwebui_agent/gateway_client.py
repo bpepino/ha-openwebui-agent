@@ -830,8 +830,12 @@ class GatewayClient:
 
         The gateway answers 200 with its decision (``asked``, ``skipped`` or
         ``refused``); nothing runs in Home Assistant. No retries: an accepted
-        request may already be a question on a satellite.
+        request may already be a question on a satellite. The gateway token is
+        required even in open mode (a yes runs the plan), so nothing is sent
+        without one.
         """
+        if not self._token:
+            raise TokenRequired("ask_action needs a gateway token")
         response = await self._send("POST", ASK_ACTION_PATH, json=body)
         data = _json(response)
         if not isinstance(data, dict) or not isinstance(data.get("status"), str):

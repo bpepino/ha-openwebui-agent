@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.3.1 — unreleased
+
+Security fix for `openwebui_agent.ask_action`, after a review of the gateway's side.
+
+- **A gateway token is required, also in open mode.** The gateway now refuses `ask_action` without the Home Assistant client's own token (a yes on the satellite runs the plan, so no device on the network may ask anonymously). Without a configured token the action fails in Home Assistant with a clear message and nothing is sent.
+- The gateway also refuses steps whose `data` the spoken question would not say (`data_not_spoken`), answers a yes or no as the satellite rather than the owner, and refuses browser requests (`application/json` only, no foreign `Origin`). Nothing changes in what this integration sends.
+
+Validation: the portable tests passed on Windows with Python 3.12 (a call without a token sends nothing). Ruff lint and format passed. Not run: the Home Assistant fixture tests (Linux only), hassfest, HACS validation, a live gateway.
+
 ## 3.3.0 — unreleased
 
 Follows the gateway's automation store. Gateway entries only; everything in 3.2 stays.
