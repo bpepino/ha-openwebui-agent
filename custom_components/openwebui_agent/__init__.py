@@ -6,11 +6,12 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
-from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers import config_validation as cv, issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.typing import ConfigType
 
 from .client import OpenWebUIClient
 from .const import (
@@ -29,7 +30,10 @@ from .history import ChatHistoryCleaner
 from .migration import migrate_options
 from .oikos import DATA_PUSHERS, async_register_view
 from .push import EventPusher
+from .services import async_setup_services
 from .state import ConversationManager
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 # The gateway serves the whole Assist pipeline: agent, speech-to-text and
 # text-to-speech. Direct Open WebUI mode (deprecated) is a conversation agent.
@@ -109,6 +113,12 @@ def _async_start_push(hass: HomeAssistant, entry: ConfigEntry, base_url: str) ->
         hass.data[DATA_PUSHERS].pop(entry.entry_id, None)
 
     entry.async_on_unload(_stop)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the services (``ask_action`` needs a loaded gateway entry)."""
+    async_setup_services(hass)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

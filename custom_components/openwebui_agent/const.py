@@ -5,7 +5,7 @@ from logging import getLogger
 LOGGER = getLogger(__package__)
 DOMAIN = "openwebui_agent"
 NAME = "Open WebUI Agent"
-VERSION = "3.2.0"
+VERSION = "3.3.0"
 CONF_SERVICE_NAME = "service_name"
 CONF_BASE_URL = "base_url"
 CONF_API_KEY = "api_key"

@@ -1332,3 +1332,42 @@ async def test_diagnostics(hass, gateway):
     gateway.health.side_effect = httpx.ConnectError("refused")
     result = await async_get_config_entry_diagnostics(hass, entry)
     assert result["gateway"] == {"error": "gateway_unreachable"}
+
+
+async def test_ask_action_validates_and_forwards(hass, gateway):
+    """The service checks its fields, sends the plan to the gateway and never runs it itself."""
+    from homeassistant.exceptions import ServiceValidationError
+
+    route = gateway.mock.post("/household/v1/ask_action").respond(
+        json={"status": "asked", "pending_id": "pend-1", "level": 2}
+    )
+    await _setup(hass, data={"gateway_token": TOKEN})
+    hass.states.async_set("light.kitchen", "on")
+    data = {
+        "question": "bedtime_sweep",
+        "satellite": "assist_satellite.kitchen",
+        "steps": [{"service": "light.turn_off", "entity_id": ["light.kitchen"]}],
+    }
+    answer = await hass.services.async_call(
+        DOMAIN, "ask_action", data, blocking=True, return_response=True
+    )
+    assert answer["status"] == "asked"
+    sent = route.calls[-1].request
+    assert sent.headers["Authorization"] == f"Bearer {TOKEN}"
+    body = json.loads(sent.content)
+    assert body["steps"] == [
+        {"service": "light.turn_off", "entity_ids": ["light.kitchen"], "data": {}}
+    ]
+    assert body["integration_version"] == "3.3.0" and body["request_id"]
+    assert hass.states.get("light.kitchen").state == "on"
+    with pytest.raises(ServiceValidationError):
+        await hass.services.async_call(
+            DOMAIN,
+            "ask_action",
+            {**data, "steps": [{"service": "light.turn_off", "entity_id": "{{ x }}"}]},
+            blocking=True,
+        )
+    assert len(route.calls) == 1
+    route.respond(json={"status": "refused", "reason": "not_exposed"})
+    with pytest.raises(HomeAssistantError, match="not_exposed"):
+        await hass.services.async_call(DOMAIN, "ask_action", data, blocking=True)

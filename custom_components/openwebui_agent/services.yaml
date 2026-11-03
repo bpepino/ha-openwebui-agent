@@ -1,0 +1,26 @@
+ask_action:
+  fields:
+    question:
+      required: true
+      example: bedtime_sweep
+      selector:
+        text:
+    steps:
+      required: true
+      example: '[{"service": "light.turn_off", "entity_id": ["light.kitchen", "light.hall"]}]'
+      selector:
+        object:
+    satellite:
+      example: assist_satellite.bedroom
+      selector:
+        entity:
+          filter:
+            - domain: assist_satellite
+    area:
+      example: bedroom
+      selector:
+        area:
+    context:
+      example: '{"window": "binary_sensor.kitchen_window"}'
+      selector:
+        object:

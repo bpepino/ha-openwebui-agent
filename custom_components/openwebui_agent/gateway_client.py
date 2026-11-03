@@ -34,6 +34,7 @@ from urllib.parse import quote
 
 import httpx
 
+from .ask_action import ASK_ACTION_PATH
 from .client import normalize_url
 from .const import LOGGER
 from .exceptions import (
@@ -823,6 +824,19 @@ class GatewayClient:
             raise GatewayUnreachable("Gateway speech stream failed") from None
         if not received:
             raise GatewayError("The gateway returned no audio")
+
+    async def async_ask_action(self, body: dict[str, Any]) -> dict[str, Any]:
+        """``POST /household/v1/ask_action``: hand the gateway a plan to ask about.
+
+        The gateway answers 200 with its decision (``asked``, ``skipped`` or
+        ``refused``); nothing runs in Home Assistant. No retries: an accepted
+        request may already be a question on a satellite.
+        """
+        response = await self._send("POST", ASK_ACTION_PATH, json=body)
+        data = _json(response)
+        if not isinstance(data, dict) or not isinstance(data.get("status"), str):
+            raise ProtocolError("Unexpected ask_action answer")
+        return data
 
     async def async_close(self) -> None:
         """Cancel local waits on unload; the gateway may finish accepted work."""

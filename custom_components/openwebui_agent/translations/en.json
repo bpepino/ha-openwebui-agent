@@ -390,5 +390,33 @@
     "gateway_offline": {
       "message": "Assistant offline, basic commands only."
     }
+  },
+  "services": {
+    "ask_action": {
+      "name": "Ask before acting",
+      "description": "Hands the AI gateway a proposed action. The gateway checks it like any other plan, asks on a voice satellite and runs it only on a yes. Home Assistant never runs it. Needs proactive questions switched on in the gateway.",
+      "fields": {
+        "question": {
+          "name": "Question",
+          "description": "A short id for the gateway's log, such as bedtime_sweep (lowercase letters, digits and _)."
+        },
+        "steps": {
+          "name": "Steps",
+          "description": "What to do on a yes: a list of service and entity_id, with optional data. A service without a domain, such as turn_off, applies to each entity's own domain."
+        },
+        "satellite": {
+          "name": "Satellite",
+          "description": "The voice satellite that asks. Without it, one in the area, else one where people are."
+        },
+        "area": {
+          "name": "Area",
+          "description": "Where to ask when no satellite is named."
+        },
+        "context": {
+          "name": "Context",
+          "description": "Up to 8 plain values kept in the gateway's log, never spoken."
+        }
+      }
+    }
   }
 }

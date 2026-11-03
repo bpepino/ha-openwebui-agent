@@ -146,6 +146,30 @@ The gateway's household reviews read the house through this integration and rece
 
 Each event has a deterministic `event_id` made from its type, entity and the time of the state change, so a retried event is a duplicate at the gateway, never a second one. Newer gateways also derive the same events from their own connection to Home Assistant, with the same IDs, and drop the duplicates; keep this push on, it still covers the gateway's connection being down or lacking an admin token. Attribute-only updates, zone-to-zone moves and changes through `unavailable`/`unknown` are not sent; pictures, URLs, tokens, locations and network addresses never leave Home Assistant. Delivery: 5 s timeout, up to 3 attempts (2 s and 8 s apart) on timeouts, connection errors, 408, 429 and 5xx; a rate-limited answer is retried once after 60 s. The queue is in memory (200 events). Problems are logged at most once a minute.
 
+## Ask before acting (`openwebui_agent.ask_action`)
+
+From 3.3. An automation can propose an action without running it: the gateway checks it like any other plan (the entities must be exposed, the service must be one the gateway runs, levels, budgets, undo), asks on a voice satellite and runs it only on a yes. Home Assistant never runs it. The gateway store's question recipes (bedtime sweep, window open while heating or AC runs, water heater on too long) use it. The gateway needs **proactive questions** switched on; otherwise it refuses.
+
+```yaml
+action: openwebui_agent.ask_action
+data:
+  question: bedtime_sweep            # a short id for the gateway's log
+  satellite: assist_satellite.bedroom
+  steps:
+    - service: light.turn_off
+      entity_id: [light.kitchen, light.hall]
+```
+
+| Field | |
+| --- | --- |
+| `question` | required: lowercase letters, digits and `_` |
+| `steps` | required, 1 to 12: `service` (`light.turn_off`, or `turn_off` for each entity's own domain), `entity_id` (one or a list, at most 40 in all), optional `data` with plain values |
+| `satellite` | optional: the `assist_satellite` that asks; without it, one in `area`, else one where people are |
+| `area` | optional: an area id |
+| `context` | optional: up to 8 plain values kept in the gateway's log, never spoken |
+
+Nothing that still looks like a template is sent. The call goes to the gateway's `POST /household/v1/ask_action` with the gateway token (the one the assistant turns use; none in open mode). The gateway answers `asked`, `skipped` (quiet hours, nobody home, the satellite busy, nothing to turn off, the same question already waiting) or `refused` (for example an entity not exposed, a level-4 device, proactive questions off). A refusal fails the action, so the automation's trace shows the reason; the answer is the action's response. A no, or no answer on the satellite, drops it.
+
 ## Errors you may hear
 
 | You hear | Meaning |

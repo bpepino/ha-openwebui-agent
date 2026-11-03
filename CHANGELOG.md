@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.3.0 — unreleased
+
+Follows the gateway's automation store. Gateway entries only; everything in 3.2 stays.
+
+- **Ask before acting.** New service `openwebui_agent.ask_action` (`question`, `steps`, `satellite`, `area`, `context`) for the store's question recipes (bedtime sweep, window open while heating or AC runs, water heater on too long). It hands the gateway a proposed plan over the gateway link (`POST /household/v1/ask_action`, the gateway token); the gateway checks it, asks on the satellite with `ask_question` and runs it only on a yes. Home Assistant never runs it.
+- The fields are checked before anything is sent: plain entity ids, `domain.service` (or a bare service such as `turn_off`, split per entity domain), at most 12 steps and 40 entities, plain values only and nothing that still looks like a template.
+- The gateway's answer is the action's response (`asked`, `skipped` with the reason); a refusal (`not_exposed`, `prohibited`, `proactive_questions_off`, ...) fails the action so the automation's trace shows it.
+- The service's texts in English and Greek.
+
+Validation: the portable tests passed on Windows with Python 3.12 (236 passed; the service's field checks and the forwarding with respx). One Home Assistant fixture test was added (the service validates, forwards with the token and raises on a refusal); it was not run here (Linux only). Ruff lint and format passed. Not run: hassfest, HACS validation, and any test against a live gateway or satellite.
+
 ## 3.2.0 — unreleased
 
 Follows the gateway's Phase 5 (the direct voice path). Gateway entries only; everything in 3.1 stays.
